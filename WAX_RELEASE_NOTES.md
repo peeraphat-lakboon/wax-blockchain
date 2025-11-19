@@ -142,3 +142,7 @@ Adapted snapshot tests for WAX
 ## Release v4.0.5wax01
 
 Merged with Leap 4.0.5
+
+## Release Spring CE v1.0.3wax01
+
+Merged with Spring Community Edition release 1.3.0
