@@ -1,34 +1,33 @@
 #pragma once
 #include <unordered_map>
 #include <fc/fwd.hpp>
+#include <fc/crypto/packhash.hpp>
 #include <fc/io/raw_fwd.hpp>
 #include <fc/string.hpp>
 
 namespace fc
 {
 
-class sha224 
+class sha224 : public add_packhash_to_hash<sha224>
 {
   public:
     sha224();
-    explicit sha224( const string& hex_str );
+    explicit sha224( const std::string& hex_str );
 
-    string str()const;
-    operator string()const;
+    std::string str()const;
+    operator std::string()const;
 
     char*       data();
     const char* data()const;
     size_t data_size()const { return 224 / 8; }
 
     static sha224 hash( const char* d, uint32_t dlen );
-    static sha224 hash( const string& );
+    static sha224 hash( const std::string& );
 
     template<typename T>
     static sha224 hash( const T& t ) 
     { 
-      sha224::encoder e; 
-      fc::raw::pack(e,t);
-      return e.result(); 
+      return packhash(t);
     } 
 
     class encoder 

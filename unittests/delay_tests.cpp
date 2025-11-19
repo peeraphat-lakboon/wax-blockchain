@@ -8,49 +8,175 @@
 #include <contracts.hpp>
 #include <test_contracts.hpp>
 
-#ifdef NON_VALIDATING_TEST
-#define TESTER tester
-#else
-#define TESTER validating_tester
-#endif
-
 using namespace eosio;
 using namespace eosio::chain;
 using namespace eosio::testing;
 
+using mvo = fc::mutable_variant_object;
+
+const std::string eosio_token = name("eosio.token"_n).to_string();
+
+static void create_accounts(validating_tester& chain) {
+   chain.produce_block();
+   chain.create_accounts({"eosio.msig"_n, "eosio.token"_n});
+   chain.produce_block();
+
+   chain.push_action(config::system_account_name,
+      "setpriv"_n,
+      config::system_account_name,
+      mvo()
+         ("account", "eosio.msig")
+         ("is_priv", 1) );
+
+   chain.set_code("eosio.token"_n, test_contracts::eosio_token_wasm());
+   chain.set_abi("eosio.token"_n, test_contracts::eosio_token_abi());
+   chain.set_code("eosio.msig"_n, test_contracts::eosio_msig_wasm());
+   chain.set_abi("eosio.msig"_n, test_contracts::eosio_msig_abi());
+
+   chain.produce_block();
+   chain.create_account("tester"_n);
+   chain.create_account("tester2"_n);
+   chain.produce_block();
+}
+
+static void propose_approve_msig_trx(validating_tester& chain, const name& proposal_name, const permission_level& perm, const fc::variant& pretty_trx) {
+   vector<permission_level> requested_perm = { perm };
+   transaction trx;
+   abi_serializer::from_variant(pretty_trx, trx, chain.get_resolver(), abi_serializer::create_yield_function(chain.abi_serializer_max_time));
+
+   chain.push_action("eosio.msig"_n, "propose"_n, vector<permission_level>{perm},
+      mvo()
+         ("proposer",      "tester")
+         ("proposal_name", proposal_name)
+         ("trx",           trx)
+         ("requested",     requested_perm)
+   );
+   chain.push_action("eosio.msig"_n, "approve"_n, vector<permission_level>{perm},
+      mvo()
+         ("proposer",      "tester")
+         ("proposal_name", proposal_name)
+         ("level",         perm)
+   );
+}
+
+static void propose_approve_msig_token_transfer_trx(validating_tester& chain, const name& proposal_name, const permission_level& perm, uint32_t delay_sec, const std::string& quantity) {
+   fc::variant pretty_trx = mvo()
+      ("expiration", "2020-01-01T00:30")
+      ("ref_block_num", 2)
+      ("ref_block_prefix", 3)
+      ("max_net_usage_words", 0)
+      ("max_cpu_usage_ms", 0)
+      ("delay_sec", delay_sec)
+      ("actions", fc::variants({
+         mvo()
+            ("account", name("eosio.token"_n))
+            ("name", "transfer")
+            ("authorization", vector<permission_level>{perm})
+            ("data", fc::mutable_variant_object()
+               ("from", name("tester"_n))
+               ("to", name("tester2"_n))
+               ("quantity", quantity)
+               ("memo", "hi" )
+            )
+      })
+   );
+
+   propose_approve_msig_trx(chain, proposal_name, perm, pretty_trx);
+}
+
+static void propose_approve_msig_updateauth_trx(validating_tester& chain, const name& proposal_name, const permission_level& perm, uint32_t delay_sec) {
+   fc::variant pretty_trx = fc::mutable_variant_object()
+      ("expiration", "2020-01-01T00:30")
+      ("ref_block_num", 2)
+      ("ref_block_prefix", 3)
+      ("max_net_usage_words", 0)
+      ("max_cpu_usage_ms", 0)
+      ("delay_sec", delay_sec)
+      ("actions", fc::variants({
+         mvo()
+            ("account", config::system_account_name)
+            ("name", updateauth::get_name())
+            ("authorization", vector<permission_level> {{ "tester"_n, config::active_name }})
+            ("data", fc::mutable_variant_object()
+               ("account", "tester")
+               ("permission", "first")
+               ("parent", "active")
+               ("auth",  authority(chain.get_public_key("tester"_n, "first")))
+            )
+      })
+   );
+
+   propose_approve_msig_trx(chain, proposal_name, perm, pretty_trx);
+}
+
+static void propose_approve_msig_linkauth_trx(validating_tester& chain, const name& proposal_name, const name& requirement, const permission_level& perm, uint32_t delay_sec) {
+   fc::variant pretty_trx = fc::mutable_variant_object()
+      ("expiration", "2020-01-01T00:30")
+      ("ref_block_num", 2)
+      ("ref_block_prefix", 3)
+      ("max_net_usage_words", 0)
+      ("max_cpu_usage_ms", 0)
+      ("delay_sec", delay_sec)
+      ("actions", fc::variants({
+         mvo()
+            ("account", config::system_account_name)
+            ("name", linkauth::get_name())
+            ("authorization", vector<permission_level>{{ "tester"_n, config::active_name }})
+            ("data", fc::mutable_variant_object()
+               ("account", "tester")
+               ("code", eosio_token)
+               ("type", "transfer")
+               ("requirement", requirement)
+            )
+      })
+   );
+
+   propose_approve_msig_trx(chain, proposal_name, perm, pretty_trx);
+}
+
+static void propose_approve_msig_unlinkauth_trx(validating_tester& chain, const name& proposal_name, const permission_level& perm, uint32_t delay_sec) {
+   fc::variant pretty_trx = mvo()
+      ("expiration", "2020-01-01T00:30")
+      ("ref_block_num", 2)
+      ("ref_block_prefix", 3)
+      ("max_net_usage_words", 0)
+      ("max_cpu_usage_ms", 0)
+      ("delay_sec", delay_sec)
+      ("actions", fc::variants({
+         mvo()
+            ("account", config::system_account_name)
+            ("name", unlinkauth::get_name())
+            ("authorization", vector<permission_level>{{ "tester"_n, config::active_name}})
+            ("data", fc::mutable_variant_object()
+               ("account", "tester")
+               ("code", eosio_token)
+               ("type", "transfer")
+            )
+      })
+   );
+
+   propose_approve_msig_trx(chain, proposal_name, perm, pretty_trx);
+}
+
+static void exec_msig_trx(validating_tester& chain, name proposal_name, const vector<permission_level>& perm) {
+   chain.push_action("eosio.msig"_n, "exec"_n, perm,
+      mvo()
+         ("proposer",      "tester")
+         ("proposal_name", proposal_name)
+         ("executer",      "tester")
+   );
+}
+
+static asset get_currency_balance(const validating_tester& chain, account_name account) {
+   return chain.get_currency_balance("eosio.token"_n, symbol(SY(4,CUR)), account);
+}
+
 
 BOOST_AUTO_TEST_SUITE(delay_tests)
 
-BOOST_FIXTURE_TEST_CASE( delay_create_account, validating_tester) { try {
+BOOST_FIXTURE_TEST_CASE( delay_error_create_account, validating_tester_no_disable_deferred_trx) { try {
 
-   produce_blocks(2);
-   signed_transaction trx;
-
-   account_name a = "newco"_n;
-   account_name creator = config::system_account_name;
-
-   auto owner_auth =  authority( get_public_key( a, "owner" ) );
-   trx.actions.emplace_back( vector<permission_level>{{creator,config::active_name}},
-                             newaccount{
-                                .creator  = creator,
-                                .name     = a,
-                                .owner    = owner_auth,
-                                .active   = authority( get_public_key( a, "active" ) )
-                             });
-   set_transaction_headers(trx);
-   trx.delay_sec = 3;
-   trx.sign( get_private_key( creator, "active" ), control->get_chain_id()  );
-
-   auto trace = push_transaction( trx );
-
-   produce_blocks(8);
-
-} FC_LOG_AND_RETHROW() }
-
-
-BOOST_FIXTURE_TEST_CASE( delay_error_create_account, validating_tester) { try {
-
-   produce_blocks(2);
+   produce_block();
    signed_transaction trx;
 
    account_name a = "newco"_n;
@@ -66,66 +192,49 @@ BOOST_FIXTURE_TEST_CASE( delay_error_create_account, validating_tester) { try {
                              });
    set_transaction_headers(trx);
    trx.delay_sec = 3;
-   trx.sign( get_private_key( creator, "active" ), control->get_chain_id()  );
+   trx.sign( get_private_key( creator, "active" ), get_chain_id()  );
 
    ilog( fc::json::to_pretty_string(trx) );
    auto trace = push_transaction( trx );
    edump((*trace));
 
-   produce_blocks(6);
+   produce_block();
+   produce_block(fc::seconds(2) + fc::milliseconds(config::block_interval_ms));
 
    auto scheduled_trxs = get_scheduled_transactions();
    BOOST_REQUIRE_EQUAL(scheduled_trxs.size(), 1u);
 
    auto billed_cpu_time_us = control->get_global_properties().configuration.min_transaction_cpu_usage;
-   auto dtrace = control->push_scheduled_transaction(scheduled_trxs.front(), fc::time_point::maximum(), fc::microseconds::maximum(), billed_cpu_time_us, true);
+   auto dtrace = control->push_scheduled_transaction(scheduled_trxs.front(), billed_cpu_time_us, true);
    BOOST_REQUIRE_EQUAL(dtrace->except.has_value(), true);
    BOOST_REQUIRE_EQUAL(dtrace->except->code(), missing_auth_exception::code_value);
 
 } FC_LOG_AND_RETHROW() }
 
-
-asset get_currency_balance(const TESTER& chain, account_name account) {
-   return chain.get_currency_balance("eosio.token"_n, symbol(SY(4,CUR)), account);
-}
-
-const std::string eosio_token = name("eosio.token"_n).to_string();
-
 // test link to permission with delay directly on it
 BOOST_AUTO_TEST_CASE( link_delay_direct_test ) { try {
-   TESTER chain;
-
+   validating_tester chain;
    const auto& tester_account = "tester"_n;
 
-   chain.produce_blocks();
-   chain.create_account("eosio.token"_n);
-   chain.produce_blocks(10);
-
-   chain.set_code("eosio.token"_n, test_contracts::eosio_token_wasm());
-   chain.set_abi("eosio.token"_n, test_contracts::eosio_token_abi().data());
-
-   chain.produce_blocks();
-   chain.create_account("tester"_n);
-   chain.create_account("tester2"_n);
-   chain.produce_blocks(10);
+   create_accounts(chain);
 
    chain.push_action(config::system_account_name, updateauth::get_name(), tester_account, fc::mutable_variant_object()
-           ("account", "tester")
-           ("permission", "first")
-           ("parent", "active")
-           ("auth",  authority(chain.get_public_key(tester_account, "first")))
+      ("account", "tester")
+      ("permission", "first")
+      ("parent", "active")
+      ("auth",  authority(chain.get_public_key(tester_account, "first")))
    );
    chain.push_action(config::system_account_name, linkauth::get_name(), tester_account, fc::mutable_variant_object()
-           ("account", "tester")
-           ("code", eosio_token)
-           ("type", "transfer")
-           ("requirement", "first"));
-   chain.produce_blocks();
-   chain.push_action("eosio.token"_n, "create"_n, "eosio.token"_n, mutable_variant_object()
-           ("issuer", eosio_token)
-           ("maximum_supply", "9000000.0000 CUR")
+      ("account", "tester")
+      ("code", eosio_token)
+      ("type", "transfer")
+      ("requirement", "first")
    );
-
+   chain.produce_block();
+   chain.push_action("eosio.token"_n, "create"_n, "eosio.token"_n, mutable_variant_object()
+      ("issuer", eosio_token)
+      ("maximum_supply", "9000000.0000 CUR")
+   );
 
    chain.push_action("eosio.token"_n, name("issue"), "eosio.token"_n, fc::mutable_variant_object()
            ("to",       eosio_token)
@@ -140,10 +249,8 @@ BOOST_AUTO_TEST_CASE( link_delay_direct_test ) { try {
        ("memo", "hi" )
    );
    BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
-   auto gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(0u, gen_size);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    auto liquid_balance = get_currency_balance(chain, "eosio.token"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("999900.0000 CUR"), liquid_balance);
@@ -158,10 +265,8 @@ BOOST_AUTO_TEST_CASE( link_delay_direct_test ) { try {
    );
 
    BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(0, gen_size);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "eosio.token"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("999900.0000 CUR"), liquid_balance);
@@ -177,212 +282,56 @@ BOOST_AUTO_TEST_CASE( link_delay_direct_test ) { try {
            ("auth",  authority(chain.get_public_key(tester_account, "first"), 10))
    );
    BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(0, gen_size);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
-   trace = chain.push_action("eosio.token"_n, name("transfer"), "tester"_n, fc::mutable_variant_object()
-       ("from", "tester")
-       ("to", "tester2")
-       ("quantity", "3.0000 CUR")
-       ("memo", "hi" ),
-       20, 10
-   );
-   BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(1, gen_size);
-   BOOST_REQUIRE_EQUAL(0, trace->action_traces.size());
+   // propose and approve an msig trx that transfers "quantity" tokens
+   // from tester to tester2 with a delay of "delay_seconds"
+   constexpr name proposal_name = "prop1"_n;
+   propose_approve_msig_token_transfer_trx(chain, proposal_name, { "tester"_n, config::active_name }, 10, "3.0000 CUR");
+
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("99.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("1.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks();
+   chain.produce_block();
+   chain.produce_block(fc::seconds(8));
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("99.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("1.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks(18);
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("99.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("1.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks();
+   // executue after delay of 10 seconds
+   exec_msig_trx(chain, proposal_name, {{ "tester"_n, config::active_name }});
 
-   liquid_balance = get_currency_balance(chain, "tester"_n);
-   BOOST_REQUIRE_EQUAL(asset::from_string("99.0000 CUR"), liquid_balance);
-   liquid_balance = get_currency_balance(chain, "tester2"_n);
-   BOOST_REQUIRE_EQUAL(asset::from_string("1.0000 CUR"), liquid_balance);
-
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("96.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("4.0000 CUR"), liquid_balance);
 
-} FC_LOG_AND_RETHROW() }/// schedule_test
-
-
-BOOST_AUTO_TEST_CASE(delete_auth_test) { try {
-   TESTER chain;
-
-   const auto& tester_account = "tester"_n;
-
-   chain.produce_blocks();
-   chain.create_account("eosio.token"_n);
-   chain.produce_blocks(10);
-
-   chain.set_code("eosio.token"_n, test_contracts::eosio_token_wasm());
-   chain.set_abi("eosio.token"_n, test_contracts::eosio_token_abi().data());
-
-   chain.produce_blocks();
-   chain.create_account("tester"_n);
-   chain.create_account("tester2"_n);
-   chain.produce_blocks(10);
-
-   transaction_trace_ptr trace;
-
-   // can't delete auth because it doesn't exist
-   BOOST_REQUIRE_EXCEPTION(
-   trace = chain.push_action(config::system_account_name, deleteauth::get_name(), tester_account, fc::mutable_variant_object()
-           ("account", "tester")
-           ("permission", "first")),
-   permission_query_exception,
-   [] (const permission_query_exception &e)->bool {
-      expect_assert_message(e, "permission_query_exception: Permission Query Exception\nFailed to retrieve permission");
-      return true;
-   });
-
-   // update auth
-   chain.push_action(config::system_account_name, updateauth::get_name(), tester_account, fc::mutable_variant_object()
-           ("account", "tester")
-           ("permission", "first")
-           ("parent", "active")
-           ("auth",  authority(chain.get_public_key(tester_account, "first")))
-   );
-
-   // link auth
-   chain.push_action(config::system_account_name, linkauth::get_name(), tester_account, fc::mutable_variant_object()
-           ("account", "tester")
-           ("code", "eosio.token")
-           ("type", "transfer")
-           ("requirement", "first"));
-
-   // create CUR token
-   chain.produce_blocks();
-   chain.push_action("eosio.token"_n, "create"_n, "eosio.token"_n, mutable_variant_object()
-           ("issuer", "eosio.token" )
-           ("maximum_supply", "9000000.0000 CUR" )
-   );
-
-   // issue to account "eosio.token"
-   chain.push_action("eosio.token"_n, name("issue"), "eosio.token"_n, fc::mutable_variant_object()
-           ("to",       "eosio.token")
-           ("quantity", "1000000.0000 CUR")
-           ("memo", "for stuff")
-   );
-
-   // transfer from eosio.token to tester
-   trace = chain.push_action("eosio.token"_n, name("transfer"), "eosio.token"_n, fc::mutable_variant_object()
-       ("from", "eosio.token")
-       ("to", "tester")
-       ("quantity", "100.0000 CUR")
-       ("memo", "hi" )
-   );
-   BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
-
-   chain.produce_blocks();
-
-   auto liquid_balance = get_currency_balance(chain, "eosio.token"_n);
-   BOOST_REQUIRE_EQUAL(asset::from_string("999900.0000 CUR"), liquid_balance);
-   liquid_balance = get_currency_balance(chain, "tester"_n);
-   BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
-
-   trace = chain.push_action("eosio.token"_n, name("transfer"), "tester"_n, fc::mutable_variant_object()
-       ("from", "tester")
-       ("to", "tester2")
-       ("quantity", "1.0000 CUR")
-       ("memo", "hi" )
-   );
-
-   BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
-
-   liquid_balance = get_currency_balance(chain, "eosio.token"_n);
-   BOOST_REQUIRE_EQUAL(asset::from_string("999900.0000 CUR"), liquid_balance);
-   liquid_balance = get_currency_balance(chain, "tester"_n);
-   BOOST_REQUIRE_EQUAL(asset::from_string("99.0000 CUR"), liquid_balance);
-   liquid_balance = get_currency_balance(chain, "tester2"_n);
-   BOOST_REQUIRE_EQUAL(asset::from_string("1.0000 CUR"), liquid_balance);
-
-   // can't delete auth because it's linked
-   BOOST_REQUIRE_EXCEPTION(
-   trace = chain.push_action(config::system_account_name, deleteauth::get_name(), tester_account, fc::mutable_variant_object()
-           ("account", "tester")
-           ("permission", "first")),
-   action_validate_exception,
-   [] (const action_validate_exception &e)->bool {
-      expect_assert_message(e, "action_validate_exception: message validation exception\nCannot delete a linked authority");
-      return true;
-   });
-
-   // unlink auth
-   trace = chain.push_action(config::system_account_name, unlinkauth::get_name(), tester_account, fc::mutable_variant_object()
-           ("account", "tester")
-           ("code", "eosio.token")
-           ("type", "transfer"));
-   BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
-
-   // delete auth
-   trace = chain.push_action(config::system_account_name, deleteauth::get_name(), tester_account, fc::mutable_variant_object()
-           ("account", "tester")
-           ("permission", "first"));
-
-   BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
-
-   chain.produce_blocks(1);;
-
-   trace = chain.push_action("eosio.token"_n, name("transfer"), "tester"_n, fc::mutable_variant_object()
-       ("from", "tester")
-       ("to", "tester2")
-       ("quantity", "3.0000 CUR")
-       ("memo", "hi" )
-   );
-   BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
-
-   chain.produce_blocks();
-
-   liquid_balance = get_currency_balance(chain, "tester"_n);
-   BOOST_REQUIRE_EQUAL(asset::from_string("96.0000 CUR"), liquid_balance);
-   liquid_balance = get_currency_balance(chain, "tester2"_n);
-   BOOST_REQUIRE_EQUAL(asset::from_string("4.0000 CUR"), liquid_balance);
-
-} FC_LOG_AND_RETHROW() }/// delete_auth_test
-
+} FC_LOG_AND_RETHROW() }/// link_delay_direct_test
 
 // test link to permission with delay on permission which is parent of min permission (special logic in permission_object::satisfies)
 BOOST_AUTO_TEST_CASE( link_delay_direct_parent_permission_test ) { try {
-   TESTER chain;
+   validating_tester chain;
 
    const auto& tester_account = "tester"_n;
 
-   chain.produce_blocks();
-   chain.create_account("eosio.token"_n);
-   chain.produce_blocks(10);
-
-   chain.set_code("eosio.token"_n, test_contracts::eosio_token_wasm());
-   chain.set_abi("eosio.token"_n, test_contracts::eosio_token_abi().data());
-
-   chain.produce_blocks();
-   chain.create_account("tester"_n);
-   chain.create_account("tester2"_n);
-   chain.produce_blocks(10);
+   create_accounts(chain);
 
    chain.push_action(config::system_account_name, updateauth::get_name(), tester_account, fc::mutable_variant_object()
            ("account", "tester")
@@ -396,7 +345,7 @@ BOOST_AUTO_TEST_CASE( link_delay_direct_parent_permission_test ) { try {
            ("type", "transfer")
            ("requirement", "first"));
 
-   chain.produce_blocks();
+   chain.produce_block();
    chain.push_action("eosio.token"_n, "create"_n, "eosio.token"_n, mutable_variant_object()
            ("issuer", eosio_token)
            ("maximum_supply", "9000000.0000 CUR")
@@ -415,10 +364,8 @@ BOOST_AUTO_TEST_CASE( link_delay_direct_parent_permission_test ) { try {
        ("memo", "hi" )
    );
    BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
-   auto gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(0, gen_size);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    auto liquid_balance = get_currency_balance(chain, "eosio.token"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("999900.0000 CUR"), liquid_balance);
@@ -433,10 +380,6 @@ BOOST_AUTO_TEST_CASE( link_delay_direct_parent_permission_test ) { try {
    );
 
    BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(0, gen_size);
-
-   chain.produce_blocks();
 
    liquid_balance = get_currency_balance(chain, "eosio.token"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("999900.0000 CUR"), liquid_balance);
@@ -452,75 +395,59 @@ BOOST_AUTO_TEST_CASE( link_delay_direct_parent_permission_test ) { try {
            ("auth",  authority(chain.get_public_key(tester_account, "active"), 15))
    );
    BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(0, gen_size);
 
-   chain.produce_blocks();
+   chain.produce_block();
+   chain.produce_block();
 
-   trace = chain.push_action("eosio.token"_n, name("transfer"), "tester"_n, fc::mutable_variant_object()
-       ("from", "tester")
-       ("to", "tester2")
-       ("quantity", "3.0000 CUR")
-       ("memo", "hi" ),
-       20, 15
-   );
-   BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(1, gen_size);
-   BOOST_REQUIRE_EQUAL(0, trace->action_traces.size());
+   // Propose and approve an msig trx that transfers "quantity" tokens
+   // from tester to tester2 with a delay of "delay_seconds"
+   constexpr name proposal_name = "prop1"_n;
+   propose_approve_msig_token_transfer_trx(chain, proposal_name, { "tester"_n, config::owner_name }, 15, "3.0000 CUR");
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("99.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("1.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("99.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("1.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks(28);
+   chain.produce_block(fc::seconds(14));
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("99.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("1.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("99.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("1.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks();
+   chain.produce_block();
+
+   // executue the msig trx
+   exec_msig_trx(chain, proposal_name, {{ "tester"_n, config::owner_name }});
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("96.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("4.0000 CUR"), liquid_balance);
 
-} FC_LOG_AND_RETHROW() }/// schedule_test
+} FC_LOG_AND_RETHROW() }/// link_delay_direct_parent_permission_test
 
 // test link to permission with delay on permission between min permission and authorizing permission it
 BOOST_AUTO_TEST_CASE( link_delay_direct_walk_parent_permissions_test ) { try {
-   TESTER chain;
-
+   validating_tester chain;
    const auto& tester_account = "tester"_n;
 
-   chain.produce_blocks();
-   chain.create_account("eosio.token"_n);
-   chain.produce_blocks(10);
-
-   chain.set_code("eosio.token"_n, test_contracts::eosio_token_wasm());
-   chain.set_abi("eosio.token"_n, test_contracts::eosio_token_abi().data());
-
-   chain.produce_blocks();
-   chain.create_account("tester"_n);
-   chain.create_account("tester2"_n);
-   chain.produce_blocks(10);
+   create_accounts(chain);
 
    chain.push_action(config::system_account_name, updateauth::get_name(), tester_account, fc::mutable_variant_object()
            ("account", "tester")
@@ -540,7 +467,7 @@ BOOST_AUTO_TEST_CASE( link_delay_direct_walk_parent_permissions_test ) { try {
            ("type", "transfer")
            ("requirement", "second"));
 
-   chain.produce_blocks();
+   chain.produce_block();
    chain.push_action("eosio.token"_n, "create"_n, "eosio.token"_n, mutable_variant_object()
            ("issuer", eosio_token)
            ("maximum_supply", "9000000.0000 CUR")
@@ -559,10 +486,8 @@ BOOST_AUTO_TEST_CASE( link_delay_direct_walk_parent_permissions_test ) { try {
        ("memo", "hi" )
    );
    BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
-   auto gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(0, gen_size);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    auto liquid_balance = get_currency_balance(chain, "eosio.token"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("999900.0000 CUR"), liquid_balance);
@@ -577,10 +502,8 @@ BOOST_AUTO_TEST_CASE( link_delay_direct_walk_parent_permissions_test ) { try {
    );
 
    BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(0, gen_size);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "eosio.token"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("999900.0000 CUR"), liquid_balance);
@@ -596,75 +519,60 @@ BOOST_AUTO_TEST_CASE( link_delay_direct_walk_parent_permissions_test ) { try {
            ("auth",  authority(chain.get_public_key(tester_account, "first"), 20))
    );
    BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(0, gen_size);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
-   trace = chain.push_action("eosio.token"_n, name("transfer"), "tester"_n, fc::mutable_variant_object()
-       ("from", "tester")
-       ("to", "tester2")
-       ("quantity", "3.0000 CUR")
-       ("memo", "hi" ),
-       30, 20
-   );
-   BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(1, gen_size);
-   BOOST_REQUIRE_EQUAL(0, trace->action_traces.size());
+
+   // propose and approve an msig trx that transfers "quantity" tokens
+   // from tester to tester2 with a delay of "delay_seconds"
+   constexpr name proposal_name = "prop1"_n;
+   propose_approve_msig_token_transfer_trx(chain, proposal_name, { "tester"_n, config::active_name }, 20, "3.0000 CUR");
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("99.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("1.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("99.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("1.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks(38);
+   chain.produce_block(fc::seconds(19));
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("99.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("1.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("99.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("1.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks();
+   // executue after delay
+   exec_msig_trx(chain, proposal_name, {{ "tester"_n, config::active_name }});
+
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("96.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("4.0000 CUR"), liquid_balance);
 
-} FC_LOG_AND_RETHROW() }/// schedule_test
+} FC_LOG_AND_RETHROW() }/// link_delay_direct_walk_parent_permissions_test
 
 // test removing delay on permission
 BOOST_AUTO_TEST_CASE( link_delay_permission_change_test ) { try {
-   TESTER chain;
+   validating_tester chain;
 
    const auto& tester_account = "tester"_n;
 
-   chain.produce_blocks();
-   chain.create_account("eosio.token"_n);
-   chain.produce_blocks(10);
-
-   chain.set_code("eosio.token"_n, test_contracts::eosio_token_wasm());
-   chain.set_abi("eosio.token"_n, test_contracts::eosio_token_abi().data());
-
-   chain.produce_blocks();
-   chain.create_account("tester"_n);
-   chain.create_account("tester2"_n);
-   chain.produce_blocks(10);
+   create_accounts(chain);
 
    chain.push_action(config::system_account_name, updateauth::get_name(), tester_account, fc::mutable_variant_object()
            ("account", "tester")
@@ -678,7 +586,7 @@ BOOST_AUTO_TEST_CASE( link_delay_permission_change_test ) { try {
            ("type", "transfer")
            ("requirement", "first"));
 
-   chain.produce_blocks();
+   chain.produce_block();
    chain.push_action("eosio.token"_n, "create"_n, "eosio.token"_n, mutable_variant_object()
            ("issuer", eosio_token )
            ("maximum_supply", "9000000.0000 CUR" )
@@ -697,10 +605,8 @@ BOOST_AUTO_TEST_CASE( link_delay_permission_change_test ) { try {
        ("memo", "hi" )
    );
    BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
-   auto gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(0, gen_size);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    auto liquid_balance = get_currency_balance(chain, "eosio.token"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("999900.0000 CUR"), liquid_balance);
@@ -708,20 +614,12 @@ BOOST_AUTO_TEST_CASE( link_delay_permission_change_test ) { try {
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
 
    // this transaction will be delayed 20 blocks
-   trace = chain.push_action("eosio.token"_n, name("transfer"), "tester"_n, fc::mutable_variant_object()
-       ("from", "tester")
-       ("to", "tester2")
-       ("quantity", "1.0000 CUR")
-       ("memo", "hi" ),
-       30, 10
-   );
+   constexpr name proposal_1_name     = "prop1"_n;
+   constexpr uint32_t delay_seconds = 10;
+   constexpr auto quantity          = "1.0000 CUR";
+   propose_approve_msig_token_transfer_trx(chain, proposal_1_name, { "tester"_n, config::active_name }, delay_seconds, quantity);
 
-   BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(1, gen_size);
-   BOOST_REQUIRE_EQUAL(0, trace->action_traces.size());
-
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "eosio.token"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("999900.0000 CUR"), liquid_balance);
@@ -731,25 +629,18 @@ BOOST_AUTO_TEST_CASE( link_delay_permission_change_test ) { try {
    BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
 
    // this transaction will be delayed 20 blocks
-   trace = chain.push_action(config::system_account_name, updateauth::get_name(), tester_account, fc::mutable_variant_object()
-           ("account", "tester")
-           ("permission", "first")
-           ("parent", "active")
-           ("auth",  authority(chain.get_public_key(tester_account, "first"))),
-           30, 10);
-   BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(2, gen_size);
-   BOOST_REQUIRE_EQUAL(0, trace->action_traces.size());
+   constexpr name proposal_2_name     = "prop2"_n;
+   constexpr uint32_t delay_seconds_2 = 10;
+   propose_approve_msig_updateauth_trx(chain, proposal_2_name, { "tester"_n, config::active_name }, delay_seconds_2);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks(16);
+   chain.produce_block(fc::seconds(8));
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
@@ -757,26 +648,19 @@ BOOST_AUTO_TEST_CASE( link_delay_permission_change_test ) { try {
    BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
 
    // this transaction will be delayed 20 blocks
-   trace = chain.push_action("eosio.token"_n, name("transfer"), "tester"_n, fc::mutable_variant_object()
-       ("from", "tester")
-       ("to", "tester2")
-       ("quantity", "5.0000 CUR")
-       ("memo", "hi" ),
-       30, 10
-   );
-   BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(3, gen_size);
-   BOOST_REQUIRE_EQUAL(0, trace->action_traces.size());
+   constexpr name proposal_3_name     = "prop3"_n;
+   constexpr uint32_t delay_seconds_3 = 10;
+   constexpr auto quantity_3          = "5.0000 CUR";
+   propose_approve_msig_token_transfer_trx(chain, proposal_3_name, { "tester"_n, config::active_name }, delay_seconds_3, quantity_3);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
@@ -784,10 +668,8 @@ BOOST_AUTO_TEST_CASE( link_delay_permission_change_test ) { try {
    BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
 
    // first transfer will finally be performed
-   chain.produce_blocks();
-
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(2, gen_size);
+   exec_msig_trx(chain, proposal_1_name, {{ "tester"_n, config::active_name }});
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("99.0000 CUR"), liquid_balance);
@@ -795,10 +677,8 @@ BOOST_AUTO_TEST_CASE( link_delay_permission_change_test ) { try {
    BOOST_REQUIRE_EQUAL(asset::from_string("1.0000 CUR"), liquid_balance);
 
    // delayed update auth removing the delay will finally execute
-   chain.produce_blocks();
-
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(1, gen_size);
+   exec_msig_trx(chain, proposal_2_name, {{ "tester"_n, config::active_name }});
+   chain.produce_block();
 
    // this transfer is performed right away since delay is removed
    trace = chain.push_action("eosio.token"_n, name("transfer"), "tester"_n, fc::mutable_variant_object()
@@ -809,53 +689,39 @@ BOOST_AUTO_TEST_CASE( link_delay_permission_change_test ) { try {
    );
    BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("89.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("11.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks(15);
+   chain.produce_block(fc::seconds(7));
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("89.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("11.0000 CUR"), liquid_balance);
-
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(1, gen_size);
 
    // second transfer finally is performed
-   chain.produce_blocks();
-
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(0, gen_size);
+   exec_msig_trx(chain, proposal_3_name, {{ "tester"_n, config::active_name }});
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("84.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("16.0000 CUR"), liquid_balance);
 
-} FC_LOG_AND_RETHROW() }/// schedule_test
+} FC_LOG_AND_RETHROW() }/// link_delay_permission_change_test
 
 // test removing delay on permission based on heirarchy delay
 BOOST_AUTO_TEST_CASE( link_delay_permission_change_with_delay_heirarchy_test ) { try {
-   TESTER chain;
+   validating_tester chain;
 
    const auto& tester_account = "tester"_n;
 
-   chain.produce_blocks();
-   chain.create_account("eosio.token"_n);
-   chain.produce_blocks(10);
-
-   chain.set_code("eosio.token"_n, test_contracts::eosio_token_wasm());
-   chain.set_abi("eosio.token"_n, test_contracts::eosio_token_abi().data());
-
-   chain.produce_blocks();
-   chain.create_account("tester"_n);
-   chain.create_account("tester2"_n);
-   chain.produce_blocks(10);
+   create_accounts(chain);
 
    chain.push_action(config::system_account_name, updateauth::get_name(), tester_account, fc::mutable_variant_object()
            ("account", "tester")
@@ -875,7 +741,7 @@ BOOST_AUTO_TEST_CASE( link_delay_permission_change_with_delay_heirarchy_test ) {
            ("type", "transfer")
            ("requirement", "second"));
 
-   chain.produce_blocks();
+   chain.produce_block();
    chain.push_action("eosio.token"_n, "create"_n, "eosio.token"_n, mutable_variant_object()
            ("issuer", eosio_token)
            ("maximum_supply", "9000000.0000 CUR" )
@@ -894,10 +760,8 @@ BOOST_AUTO_TEST_CASE( link_delay_permission_change_with_delay_heirarchy_test ) {
        ("memo", "hi" )
    );
    BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
-   auto gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(0, gen_size);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    auto liquid_balance = get_currency_balance(chain, "eosio.token"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("999900.0000 CUR"), liquid_balance);
@@ -905,20 +769,12 @@ BOOST_AUTO_TEST_CASE( link_delay_permission_change_with_delay_heirarchy_test ) {
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
 
    // this transaction will be delayed 20 blocks
-   trace = chain.push_action("eosio.token"_n, name("transfer"), "tester"_n, fc::mutable_variant_object()
-       ("from", "tester")
-       ("to", "tester2")
-       ("quantity", "1.0000 CUR")
-       ("memo", "hi" ),
-       30, 10
-   );
+   constexpr name proposal_1_name     = "prop1"_n;
+   constexpr uint32_t delay_seconds = 10;
+   constexpr auto quantity          = "1.0000 CUR";
+   propose_approve_msig_token_transfer_trx(chain, proposal_1_name, { "tester"_n, config::active_name }, delay_seconds, quantity);
 
-   BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(1, gen_size);
-   BOOST_REQUIRE_EQUAL(0, trace->action_traces.size());
-
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "eosio.token"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("999900.0000 CUR"), liquid_balance);
@@ -928,27 +784,18 @@ BOOST_AUTO_TEST_CASE( link_delay_permission_change_with_delay_heirarchy_test ) {
    BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
 
    // this transaction will be delayed 20 blocks
-   chain.push_action(config::system_account_name, updateauth::get_name(), tester_account, fc::mutable_variant_object()
-           ("account", "tester")
-           ("permission", "first")
-           ("parent", "active")
-           ("auth",  authority(chain.get_public_key(tester_account, "first"))),
-           30, 10
-   );
+   constexpr name proposal_2_name     = "prop2"_n;
+   constexpr uint32_t delay_seconds_2 = 10;
+   propose_approve_msig_updateauth_trx(chain, proposal_2_name, { "tester"_n, config::active_name }, delay_seconds_2);
 
-   BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(2, gen_size);
-   BOOST_REQUIRE_EQUAL(0, trace->action_traces.size());
-
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks(16);
+   chain.produce_block(fc::seconds(8));
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
@@ -956,27 +803,19 @@ BOOST_AUTO_TEST_CASE( link_delay_permission_change_with_delay_heirarchy_test ) {
    BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
 
    // this transaction will be delayed 20 blocks
-   trace = chain.push_action("eosio.token"_n, name("transfer"), "tester"_n, fc::mutable_variant_object()
-       ("from", "tester")
-       ("to", "tester2")
-       ("quantity", "5.0000 CUR")
-       ("memo", "hi" ),
-       30, 10
-   );
+   constexpr name proposal_3_name     = "prop3"_n;
+   constexpr uint32_t delay_seconds_3 = 10;
+   constexpr auto quantity_3          = "5.0000 CUR";
+   propose_approve_msig_token_transfer_trx(chain, proposal_3_name, { "tester"_n, config::active_name }, delay_seconds_3, quantity_3);
 
-   BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(3, gen_size);
-   BOOST_REQUIRE_EQUAL(0, trace->action_traces.size());
-
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
@@ -984,14 +823,17 @@ BOOST_AUTO_TEST_CASE( link_delay_permission_change_with_delay_heirarchy_test ) {
    BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
 
    // first transfer will finally be performed
-   chain.produce_blocks();
+   exec_msig_trx(chain, proposal_1_name, {{ "tester"_n, config::active_name }});
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("99.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("1.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks();
+   // delayed update auth removing the delay will finally execute
+   exec_msig_trx(chain, proposal_2_name, {{ "tester"_n, config::active_name }});
+   chain.produce_block();
 
    // this transfer is performed right away since delay is removed
    trace = chain.push_action("eosio.token"_n, name("transfer"), "tester"_n, fc::mutable_variant_object()
@@ -1002,24 +844,22 @@ BOOST_AUTO_TEST_CASE( link_delay_permission_change_with_delay_heirarchy_test ) {
    );
 
    BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(1, gen_size);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("89.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("11.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks(14);
+   chain.produce_block(fc::seconds(7));
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("89.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("11.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("89.0000 CUR"), liquid_balance);
@@ -1027,32 +867,23 @@ BOOST_AUTO_TEST_CASE( link_delay_permission_change_with_delay_heirarchy_test ) {
    BOOST_REQUIRE_EQUAL(asset::from_string("11.0000 CUR"), liquid_balance);
 
    // second transfer finally is performed
-   chain.produce_blocks();
+   exec_msig_trx(chain, proposal_3_name, {{ "tester"_n, config::active_name }});
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("84.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("16.0000 CUR"), liquid_balance);
 
-} FC_LOG_AND_RETHROW() }/// schedule_test
+} FC_LOG_AND_RETHROW() }/// link_delay_permission_change_with_delay_heirarchy_test
 
 // test moving link with delay on permission
 BOOST_AUTO_TEST_CASE( link_delay_link_change_test ) { try {
-   TESTER chain;
+   validating_tester chain;
 
    const auto& tester_account = "tester"_n;
 
-   chain.produce_blocks();
-   chain.create_account("eosio.token"_n);
-   chain.produce_blocks(10);
-
-   chain.set_code("eosio.token"_n, test_contracts::eosio_token_wasm());
-   chain.set_abi("eosio.token"_n, test_contracts::eosio_token_abi().data());
-
-   chain.produce_blocks();
-   chain.create_account("tester"_n);
-   chain.create_account("tester2"_n);
-   chain.produce_blocks(10);
+   create_accounts(chain);
 
    chain.push_action(config::system_account_name, updateauth::get_name(), tester_account, fc::mutable_variant_object()
            ("account", "tester")
@@ -1072,7 +903,7 @@ BOOST_AUTO_TEST_CASE( link_delay_link_change_test ) { try {
            ("auth",  authority(chain.get_public_key(tester_account, "second")))
    );
 
-   chain.produce_blocks();
+   chain.produce_block();
    chain.push_action("eosio.token"_n, "create"_n, "eosio.token"_n, mutable_variant_object()
            ("issuer", eosio_token)
            ("maximum_supply", "9000000.0000 CUR" )
@@ -1091,10 +922,8 @@ BOOST_AUTO_TEST_CASE( link_delay_link_change_test ) { try {
        ("memo", "hi" )
    );
    BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
-   auto gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(0, gen_size);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    auto liquid_balance = get_currency_balance(chain, "eosio.token"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("999900.0000 CUR"), liquid_balance);
@@ -1102,19 +931,12 @@ BOOST_AUTO_TEST_CASE( link_delay_link_change_test ) { try {
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
 
    // this transaction will be delayed 20 blocks
-   trace = chain.push_action("eosio.token"_n, name("transfer"), "tester"_n, fc::mutable_variant_object()
-       ("from", "tester")
-       ("to", "tester2")
-       ("quantity", "1.0000 CUR")
-       ("memo", "hi" ),
-       30, 10
-   );
-   BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(1, gen_size);
-   BOOST_REQUIRE_EQUAL(0, trace->action_traces.size());
+   constexpr name proposal_1_name     = "prop1"_n;
+   constexpr uint32_t delay_seconds = 10;
+   constexpr auto quantity          = "1.0000 CUR";
+   propose_approve_msig_token_transfer_trx(chain, proposal_1_name, { "tester"_n, config::active_name }, delay_seconds, quantity);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "eosio.token"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("999900.0000 CUR"), liquid_balance);
@@ -1131,34 +953,25 @@ BOOST_AUTO_TEST_CASE( link_delay_link_change_test ) { try {
       ("code", eosio_token)
       ("type", "transfer")
       ("requirement", "second"),
-      30, 3),
+      30, 0),
       unsatisfied_authorization,
       fc_exception_message_starts_with("transaction declares authority")
    );
 
    // this transaction will be delayed 20 blocks
-   chain.push_action( config::system_account_name, linkauth::get_name(),
-                      vector<permission_level>{{tester_account, "first"_n}},
-                      fc::mutable_variant_object()
-           ("account", "tester")
-           ("code", eosio_token)
-           ("type", "transfer")
-           ("requirement", "second"),
-           30, 10
-   );
-   BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(2, gen_size);
-   BOOST_REQUIRE_EQUAL(0, trace->action_traces.size());
+   constexpr name proposal_2_name     = "prop2"_n;
+   constexpr uint32_t delay_seconds_2 = 10;
+   propose_approve_msig_linkauth_trx(chain, proposal_2_name, "second"_n, { "tester"_n, config::active_name }, delay_seconds_2);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks(16);
+   chain.produce_block();
+   chain.produce_block(fc::seconds(7) + fc::milliseconds(config::block_interval_ms));
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
@@ -1166,26 +979,19 @@ BOOST_AUTO_TEST_CASE( link_delay_link_change_test ) { try {
    BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
 
    // this transaction will be delayed 20 blocks
-   trace = chain.push_action("eosio.token"_n, name("transfer"), "tester"_n, fc::mutable_variant_object()
-       ("from", "tester")
-       ("to", "tester2")
-       ("quantity", "5.0000 CUR")
-       ("memo", "hi" ),
-       30, 10
-   );
-   BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(3, gen_size);
-   BOOST_CHECK_EQUAL(0, trace->action_traces.size());
+   constexpr name proposal_3_name     = "prop3"_n;
+   constexpr uint32_t delay_seconds_3 = 10;
+   constexpr auto quantity_3          = "5.0000 CUR";
+   propose_approve_msig_token_transfer_trx(chain, proposal_3_name, { "tester"_n, config::active_name }, delay_seconds_3, quantity_3);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
@@ -1193,7 +999,8 @@ BOOST_AUTO_TEST_CASE( link_delay_link_change_test ) { try {
    BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
 
    // first transfer will finally be performed
-   chain.produce_blocks();
+   exec_msig_trx(chain, proposal_1_name, {{ "tester"_n, config::active_name }});
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("99.0000 CUR"), liquid_balance);
@@ -1201,7 +1008,8 @@ BOOST_AUTO_TEST_CASE( link_delay_link_change_test ) { try {
    BOOST_REQUIRE_EQUAL(asset::from_string("1.0000 CUR"), liquid_balance);
 
    // delay on minimum permission of transfer is finally removed
-   chain.produce_blocks();
+   exec_msig_trx(chain, proposal_2_name, {{ "tester"_n, config::active_name }});
+   chain.produce_block();
 
    // this transfer is performed right away since delay is removed
    trace = chain.push_action("eosio.token"_n, name("transfer"), "tester"_n, fc::mutable_variant_object()
@@ -1211,16 +1019,14 @@ BOOST_AUTO_TEST_CASE( link_delay_link_change_test ) { try {
        ("memo", "hi" )
    );
    BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(1, gen_size);
-
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("89.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("11.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks(16);
+   chain.produce_block();
+   chain.produce_block(fc::seconds(7) + fc::seconds(config::block_interval_ms));
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("89.0000 CUR"), liquid_balance);
@@ -1228,33 +1034,22 @@ BOOST_AUTO_TEST_CASE( link_delay_link_change_test ) { try {
    BOOST_REQUIRE_EQUAL(asset::from_string("11.0000 CUR"), liquid_balance);
 
    // second transfer finally is performed
-   chain.produce_blocks();
+   exec_msig_trx(chain, proposal_3_name, {{ "tester"_n, config::active_name }});
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("84.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("16.0000 CUR"), liquid_balance);
 
-} FC_LOG_AND_RETHROW() }/// schedule_test
-
+} FC_LOG_AND_RETHROW() }/// link_delay_link_change_test
 
 // test link with unlink
 BOOST_AUTO_TEST_CASE( link_delay_unlink_test ) { try {
-   TESTER chain;
-
+   validating_tester chain;
    const auto& tester_account = "tester"_n;
 
-   chain.produce_blocks();
-   chain.create_account("eosio.token"_n);
-   chain.produce_blocks(10);
-
-   chain.set_code("eosio.token"_n, test_contracts::eosio_token_wasm());
-   chain.set_abi("eosio.token"_n, test_contracts::eosio_token_abi().data());
-
-   chain.produce_blocks();
-   chain.create_account("tester"_n);
-   chain.create_account("tester2"_n);
-   chain.produce_blocks(10);
+   create_accounts(chain);
 
    chain.push_action(config::system_account_name, updateauth::get_name(), tester_account, fc::mutable_variant_object()
            ("account", "tester")
@@ -1268,7 +1063,7 @@ BOOST_AUTO_TEST_CASE( link_delay_unlink_test ) { try {
            ("type", "transfer")
            ("requirement", "first"));
 
-   chain.produce_blocks();
+   chain.produce_block();
    chain.push_action("eosio.token"_n, "create"_n, "eosio.token"_n, mutable_variant_object()
            ("issuer", eosio_token )
            ("maximum_supply", "9000000.0000 CUR" )
@@ -1288,7 +1083,7 @@ BOOST_AUTO_TEST_CASE( link_delay_unlink_test ) { try {
    );
    BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    auto liquid_balance = get_currency_balance(chain, "eosio.token"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("999900.0000 CUR"), liquid_balance);
@@ -1296,19 +1091,12 @@ BOOST_AUTO_TEST_CASE( link_delay_unlink_test ) { try {
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
 
    // this transaction will be delayed 20 blocks
-   trace = chain.push_action("eosio.token"_n, name("transfer"), "tester"_n, fc::mutable_variant_object()
-       ("from", "tester")
-       ("to", "tester2")
-       ("quantity", "1.0000 CUR")
-       ("memo", "hi" ),
-       30, 10
-   );
-   BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
-   auto gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(1, gen_size);
-   BOOST_REQUIRE_EQUAL(0, trace->action_traces.size());
+   constexpr name first_trnsfr_propsal_name   = "prop1"_n;
+   constexpr uint32_t first_trnsfr_delay_seconds = 10;
+   constexpr auto first_trnsfr_quantity          = "1.0000 CUR";
+   propose_approve_msig_token_transfer_trx(chain, first_trnsfr_propsal_name, { "tester"_n, config::active_name }, first_trnsfr_delay_seconds, first_trnsfr_quantity);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "eosio.token"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("999900.0000 CUR"), liquid_balance);
@@ -1324,32 +1112,24 @@ BOOST_AUTO_TEST_CASE( link_delay_unlink_test ) { try {
          ("account", "tester")
          ("code", eosio_token)
          ("type", "transfer"),
-         30, 7
+         30, 0
       ),
       unsatisfied_authorization,
       fc_exception_message_starts_with("transaction declares authority")
    );
 
    // this transaction will be delayed 20 blocks
-   chain.push_action(config::system_account_name, unlinkauth::get_name(), tester_account, fc::mutable_variant_object()
-           ("account", "tester")
-           ("code", eosio_token)
-           ("type", "transfer"),
-           30, 10
-   );
-   BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(2, gen_size);
-   BOOST_REQUIRE_EQUAL(0, trace->action_traces.size());
+   constexpr name unlinkauth_proposal_name = "prop2"_n;
+   propose_approve_msig_unlinkauth_trx(chain, unlinkauth_proposal_name, { "tester"_n, config::active_name }, 10);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks(16);
+   chain.produce_block(fc::seconds(8));
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
@@ -1357,26 +1137,19 @@ BOOST_AUTO_TEST_CASE( link_delay_unlink_test ) { try {
    BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
 
    // this transaction will be delayed 20 blocks
-   trace = chain.push_action("eosio.token"_n, name("transfer"), "tester"_n, fc::mutable_variant_object()
-       ("from", "tester")
-       ("to", "tester2")
-       ("quantity", "5.0000 CUR")
-       ("memo", "hi" ),
-       30, 10
-   );
-   BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(3, gen_size);
-   BOOST_REQUIRE_EQUAL(0, trace->action_traces.size());
+   constexpr name second_trnfr_propsal_name      = "prop3"_n;
+   constexpr uint32_t second_trnfr_delay_seconds = 10;
+   constexpr auto second_trnfr_quantity          = "5.0000 CUR";
+   propose_approve_msig_token_transfer_trx(chain, second_trnfr_propsal_name, { "tester"_n, config::active_name }, second_trnfr_delay_seconds, second_trnfr_quantity);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
@@ -1384,7 +1157,8 @@ BOOST_AUTO_TEST_CASE( link_delay_unlink_test ) { try {
    BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
 
    // first transfer will finally be performed
-   chain.produce_blocks();
+   exec_msig_trx(chain, first_trnsfr_propsal_name, {{ "tester"_n, config::active_name }});
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("99.0000 CUR"), liquid_balance);
@@ -1392,7 +1166,8 @@ BOOST_AUTO_TEST_CASE( link_delay_unlink_test ) { try {
    BOOST_REQUIRE_EQUAL(asset::from_string("1.0000 CUR"), liquid_balance);
 
    // the delayed unlinkauth finally occurs
-   chain.produce_blocks();
+   exec_msig_trx(chain, unlinkauth_proposal_name, {{ "tester"_n, config::active_name }});
+   chain.produce_block();
 
    // this transfer is performed right away since delay is removed
    trace = chain.push_action("eosio.token"_n, name("transfer"), "tester"_n, fc::mutable_variant_object()
@@ -1403,14 +1178,15 @@ BOOST_AUTO_TEST_CASE( link_delay_unlink_test ) { try {
    );
    BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("89.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("11.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks(15);
+   chain.produce_block(fc::seconds(7));
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("89.0000 CUR"), liquid_balance);
@@ -1418,7 +1194,8 @@ BOOST_AUTO_TEST_CASE( link_delay_unlink_test ) { try {
    BOOST_REQUIRE_EQUAL(asset::from_string("11.0000 CUR"), liquid_balance);
 
    // second transfer finally is performed
-   chain.produce_blocks();
+   exec_msig_trx(chain, second_trnfr_propsal_name, {{ "tester"_n, config::active_name }});
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("84.0000 CUR"), liquid_balance);
@@ -1429,21 +1206,10 @@ BOOST_AUTO_TEST_CASE( link_delay_unlink_test ) { try {
 
 // test moving link with delay on permission's parent
 BOOST_AUTO_TEST_CASE( link_delay_link_change_heirarchy_test ) { try {
-   TESTER chain;
-
+   validating_tester chain;
    const auto& tester_account = "tester"_n;
 
-   chain.produce_blocks();
-   chain.create_account("eosio.token"_n);
-   chain.produce_blocks(10);
-
-   chain.set_code("eosio.token"_n, test_contracts::eosio_token_wasm());
-   chain.set_abi("eosio.token"_n, test_contracts::eosio_token_abi().data());
-
-   chain.produce_blocks();
-   chain.create_account("tester"_n);
-   chain.create_account("tester2"_n);
-   chain.produce_blocks(10);
+   create_accounts(chain);
 
    chain.push_action(config::system_account_name, updateauth::get_name(), tester_account, fc::mutable_variant_object()
            ("account", "tester")
@@ -1469,7 +1235,7 @@ BOOST_AUTO_TEST_CASE( link_delay_link_change_heirarchy_test ) { try {
            ("auth",  authority(chain.get_public_key(tester_account, "third")))
    );
 
-   chain.produce_blocks();
+   chain.produce_block();
    chain.push_action("eosio.token"_n, "create"_n, "eosio.token"_n, mutable_variant_object()
            ("issuer", eosio_token)
            ("maximum_supply", "9000000.0000 CUR" )
@@ -1488,10 +1254,8 @@ BOOST_AUTO_TEST_CASE( link_delay_link_change_heirarchy_test ) { try {
        ("memo", "hi" )
    );
    BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
-   auto gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(0, gen_size);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    auto liquid_balance = get_currency_balance(chain, "eosio.token"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("999900.0000 CUR"), liquid_balance);
@@ -1499,19 +1263,10 @@ BOOST_AUTO_TEST_CASE( link_delay_link_change_heirarchy_test ) { try {
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
 
    // this transaction will be delayed 20 blocks
-   trace = chain.push_action("eosio.token"_n, name("transfer"), "tester"_n, fc::mutable_variant_object()
-       ("from", "tester")
-       ("to", "tester2")
-       ("quantity", "1.0000 CUR")
-       ("memo", "hi" ),
-       30, 10
-   );
-   BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(1, gen_size);
-   BOOST_REQUIRE_EQUAL(0, trace->action_traces.size());
+   constexpr name first_trnsfr_propsal_name   = "prop1"_n;
+   propose_approve_msig_token_transfer_trx(chain, first_trnsfr_propsal_name, { "tester"_n, config::active_name }, 10, "1.0000 CUR");
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "eosio.token"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("999900.0000 CUR"), liquid_balance);
@@ -1521,26 +1276,19 @@ BOOST_AUTO_TEST_CASE( link_delay_link_change_heirarchy_test ) { try {
    BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
 
    // this transaction will be delayed 20 blocks
-   chain.push_action(config::system_account_name, linkauth::get_name(), tester_account, fc::mutable_variant_object()
-           ("account", "tester")
-           ("code", eosio_token)
-           ("type", "transfer")
-           ("requirement", "third"),
-           30, 10
-   );
-   BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(2, gen_size);
-   BOOST_CHECK_EQUAL(0, trace->action_traces.size());
+   constexpr name linkauth_proposal_name  = "prop2"_n;
+   propose_approve_msig_linkauth_trx(chain, linkauth_proposal_name, "third"_n, { "tester"_n, config::active_name }, 10);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks(16);
+   chain.produce_block();
+   chain.produce_block(fc::seconds(7));
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
@@ -1548,26 +1296,17 @@ BOOST_AUTO_TEST_CASE( link_delay_link_change_heirarchy_test ) { try {
    BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
 
    // this transaction will be delayed 20 blocks
-   trace = chain.push_action("eosio.token"_n, name("transfer"), "tester"_n, fc::mutable_variant_object()
-       ("from", "tester")
-       ("to", "tester2")
-       ("quantity", "5.0000 CUR")
-       ("memo", "hi" ),
-       30, 10
-   );
-   BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(3, gen_size);
-   BOOST_CHECK_EQUAL(0, trace->action_traces.size());
+   constexpr name second_trnsfr_propsal_name      = "prop3"_n;
+   propose_approve_msig_token_transfer_trx(chain, second_trnsfr_propsal_name, { "tester"_n, config::active_name }, 10, "5.0000 CUR");
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
@@ -1575,7 +1314,8 @@ BOOST_AUTO_TEST_CASE( link_delay_link_change_heirarchy_test ) { try {
    BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
 
    // first transfer will finally be performed
-   chain.produce_blocks();
+   exec_msig_trx(chain, first_trnsfr_propsal_name, {{ "tester"_n, config::active_name }});
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("99.0000 CUR"), liquid_balance);
@@ -1583,7 +1323,8 @@ BOOST_AUTO_TEST_CASE( link_delay_link_change_heirarchy_test ) { try {
    BOOST_REQUIRE_EQUAL(asset::from_string("1.0000 CUR"), liquid_balance);
 
    // delay on minimum permission of transfer is finally removed
-   chain.produce_blocks();
+   exec_msig_trx(chain, linkauth_proposal_name, {{ "tester"_n, config::active_name }});
+   chain.produce_block();
 
    // this transfer is performed right away since delay is removed
    trace = chain.push_action("eosio.token"_n, name("transfer"), "tester"_n, fc::mutable_variant_object()
@@ -1593,15 +1334,15 @@ BOOST_AUTO_TEST_CASE( link_delay_link_change_heirarchy_test ) { try {
        ("memo", "hi" )
    );
    BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(1, gen_size);
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("89.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("11.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks(16);
+   chain.produce_block();
+   chain.produce_block(fc::seconds(7));
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("89.0000 CUR"), liquid_balance);
@@ -1609,7 +1350,8 @@ BOOST_AUTO_TEST_CASE( link_delay_link_change_heirarchy_test ) { try {
    BOOST_REQUIRE_EQUAL(asset::from_string("11.0000 CUR"), liquid_balance);
 
    // second transfer finally is performed
-   chain.produce_blocks();
+   exec_msig_trx(chain, second_trnsfr_propsal_name, {{ "tester"_n, config::active_name }});
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("84.0000 CUR"), liquid_balance);
@@ -1618,153 +1360,25 @@ BOOST_AUTO_TEST_CASE( link_delay_link_change_heirarchy_test ) { try {
 
 } FC_LOG_AND_RETHROW() } /// link_delay_link_change_heirarchy_test
 
-// test delay_sec field imposing unneeded delay
-BOOST_AUTO_TEST_CASE( mindelay_test ) { try {
-   TESTER chain;
-
-   chain.produce_blocks();
-   chain.create_account("eosio.token"_n);
-   chain.produce_blocks(10);
-
-   chain.set_code("eosio.token"_n, test_contracts::eosio_token_wasm());
-   chain.set_abi("eosio.token"_n, test_contracts::eosio_token_abi().data());
-
-   chain.produce_blocks();
-   chain.create_account("tester"_n);
-   chain.create_account("tester2"_n);
-   chain.produce_blocks(10);
-
-   chain.push_action("eosio.token"_n, "create"_n, "eosio.token"_n, mutable_variant_object()
-           ("issuer", eosio_token)
-           ("maximum_supply", "9000000.0000 CUR")
-   );
-
-   chain.push_action("eosio.token"_n, name("issue"), "eosio.token"_n, fc::mutable_variant_object()
-           ("to",       eosio_token)
-           ("quantity", "1000000.0000 CUR")
-           ("memo", "for stuff")
-   );
-
-   auto trace = chain.push_action("eosio.token"_n, name("transfer"), "eosio.token"_n, fc::mutable_variant_object()
-       ("from", eosio_token)
-       ("to", "tester")
-       ("quantity", "100.0000 CUR")
-       ("memo", "hi" )
-   );
-   BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
-   auto gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(0, gen_size);
-
-   chain.produce_blocks();
-
-   auto liquid_balance = get_currency_balance(chain, "eosio.token"_n);
-   BOOST_REQUIRE_EQUAL(asset::from_string("999900.0000 CUR"), liquid_balance);
-   liquid_balance = get_currency_balance(chain, "tester"_n);
-   BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
-
-   trace = chain.push_action("eosio.token"_n, name("transfer"), "tester"_n, fc::mutable_variant_object()
-       ("from", "tester")
-       ("to", "tester2")
-       ("quantity", "1.0000 CUR")
-       ("memo", "hi" )
-   );
-
-   BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(0, gen_size);
-
-   chain.produce_blocks();
-
-   liquid_balance = get_currency_balance(chain, "eosio.token"_n);
-   BOOST_REQUIRE_EQUAL(asset::from_string("999900.0000 CUR"), liquid_balance);
-   liquid_balance = get_currency_balance(chain, "tester"_n);
-   BOOST_REQUIRE_EQUAL(asset::from_string("99.0000 CUR"), liquid_balance);
-   liquid_balance = get_currency_balance(chain, "tester2"_n);
-   BOOST_REQUIRE_EQUAL(asset::from_string("1.0000 CUR"), liquid_balance);
-
-   // send transfer with delay_sec set to 10
-   const auto& acnt = chain.control->db().get<account_object,by_name>("eosio.token"_n);
-   auto abi = acnt.get_abi();
-   chain::abi_serializer abis(std::move(abi), abi_serializer::create_yield_function( chain.abi_serializer_max_time ));
-   const auto a = chain.control->db().get<account_object,by_name>("eosio.token"_n).get_abi();
-
-   string action_type_name = abis.get_action_type(name("transfer"));
-
-   action act;
-   act.account = "eosio.token"_n;
-   act.name = name("transfer");
-   act.authorization.push_back(permission_level{"tester"_n, config::active_name});
-   act.data = abis.variant_to_binary(action_type_name, fc::mutable_variant_object()
-      ("from", "tester")
-      ("to", "tester2")
-      ("quantity", "3.0000 CUR")
-      ("memo", "hi" ),
-      abi_serializer::create_yield_function( chain.abi_serializer_max_time )
-   );
-
-   signed_transaction trx;
-   trx.actions.push_back(act);
-
-   chain.set_transaction_headers(trx, 30, 10);
-   trx.sign(chain.get_private_key("tester"_n, "active"), chain.control->get_chain_id());
-   trace = chain.push_transaction(trx);
-   BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(1, gen_size);
-   BOOST_REQUIRE_EQUAL(0, trace->action_traces.size());
-
-   liquid_balance = get_currency_balance(chain, "tester"_n);
-   BOOST_REQUIRE_EQUAL(asset::from_string("99.0000 CUR"), liquid_balance);
-   liquid_balance = get_currency_balance(chain, "tester2"_n);
-   BOOST_REQUIRE_EQUAL(asset::from_string("1.0000 CUR"), liquid_balance);
-
-   chain.produce_blocks();
-
-   liquid_balance = get_currency_balance(chain, "tester"_n);
-   BOOST_REQUIRE_EQUAL(asset::from_string("99.0000 CUR"), liquid_balance);
-   liquid_balance = get_currency_balance(chain, "tester2"_n);
-   BOOST_REQUIRE_EQUAL(asset::from_string("1.0000 CUR"), liquid_balance);
-
-   chain.produce_blocks(18);
-
-   liquid_balance = get_currency_balance(chain, "tester"_n);
-   BOOST_REQUIRE_EQUAL(asset::from_string("99.0000 CUR"), liquid_balance);
-   liquid_balance = get_currency_balance(chain, "tester2"_n);
-   BOOST_REQUIRE_EQUAL(asset::from_string("1.0000 CUR"), liquid_balance);
-
-   chain.produce_blocks();
-
-   liquid_balance = get_currency_balance(chain, "tester"_n);
-   BOOST_REQUIRE_EQUAL(asset::from_string("99.0000 CUR"), liquid_balance);
-   liquid_balance = get_currency_balance(chain, "tester2"_n);
-   BOOST_REQUIRE_EQUAL(asset::from_string("1.0000 CUR"), liquid_balance);
-
-   chain.produce_blocks();
-
-   liquid_balance = get_currency_balance(chain, "tester"_n);
-   BOOST_REQUIRE_EQUAL(asset::from_string("96.0000 CUR"), liquid_balance);
-   liquid_balance = get_currency_balance(chain, "tester2"_n);
-   BOOST_REQUIRE_EQUAL(asset::from_string("4.0000 CUR"), liquid_balance);
-
-} FC_LOG_AND_RETHROW() }/// schedule_test
-
 // test canceldelay action cancelling a delayed transaction
 BOOST_AUTO_TEST_CASE( canceldelay_test ) { try {
-   TESTER chain;
+   validating_tester_no_disable_deferred_trx chain;
+   chain.produce_block();
+
    const auto& tester_account = "tester"_n;
    std::vector<transaction_id_type> ids;
 
-   chain.produce_blocks();
+   chain.produce_block();
    chain.create_account("eosio.token"_n);
-   chain.produce_blocks(10);
+   chain.produce_block();
 
    chain.set_code("eosio.token"_n, test_contracts::eosio_token_wasm());
-   chain.set_abi("eosio.token"_n, test_contracts::eosio_token_abi().data());
+   chain.set_abi("eosio.token"_n, test_contracts::eosio_token_abi());
 
-   chain.produce_blocks();
+   chain.produce_block();
    chain.create_account("tester"_n);
    chain.create_account("tester2"_n);
-   chain.produce_blocks(10);
+   chain.produce_block();
 
    chain.push_action(config::system_account_name, updateauth::get_name(), tester_account, fc::mutable_variant_object()
            ("account", "tester")
@@ -1778,7 +1392,7 @@ BOOST_AUTO_TEST_CASE( canceldelay_test ) { try {
            ("type", "transfer")
            ("requirement", "first"));
 
-   chain.produce_blocks();
+   chain.produce_block();
    chain.push_action("eosio.token"_n, "create"_n, "eosio.token"_n, mutable_variant_object()
            ("issuer", eosio_token)
            ("maximum_supply", "9000000.0000 CUR")
@@ -1798,9 +1412,9 @@ BOOST_AUTO_TEST_CASE( canceldelay_test ) { try {
    );
    BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
    auto gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(0, gen_size);
+   BOOST_REQUIRE_EQUAL(0u, gen_size);
 
-   chain.produce_blocks();
+   chain.produce_block();
    auto liquid_balance = get_currency_balance(chain, "eosio.token"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("999900.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester"_n);
@@ -1818,14 +1432,14 @@ BOOST_AUTO_TEST_CASE( canceldelay_test ) { try {
    ids.push_back(trace->id);
    BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
    gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(1, gen_size);
-   BOOST_CHECK_EQUAL(0, trace->action_traces.size());
+   BOOST_CHECK_EQUAL(1u, gen_size);
+   BOOST_CHECK_EQUAL(0u, trace->action_traces.size());
 
    const auto& idx = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>();
    auto itr = idx.find( trace->id );
    BOOST_CHECK_EQUAL( (itr != idx.end()), true );
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "eosio.token"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("999900.0000 CUR"), liquid_balance);
@@ -1861,17 +1475,17 @@ BOOST_AUTO_TEST_CASE( canceldelay_test ) { try {
    ids.push_back(trace->id);
    BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
    gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(2, gen_size);
-   BOOST_CHECK_EQUAL(0, trace->action_traces.size());
+   BOOST_CHECK_EQUAL(2u, gen_size);
+   BOOST_CHECK_EQUAL(0u, trace->action_traces.size());
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks(16);
+   chain.produce_block(fc::seconds(8));
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
@@ -1890,10 +1504,10 @@ BOOST_AUTO_TEST_CASE( canceldelay_test ) { try {
    ids.push_back(trace->id);
    BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
    gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(3, gen_size);
-   BOOST_CHECK_EQUAL(0, trace->action_traces.size());
+   BOOST_CHECK_EQUAL(3u, gen_size);
+   BOOST_CHECK_EQUAL(0u, trace->action_traces.size());
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
@@ -1906,18 +1520,21 @@ BOOST_AUTO_TEST_CASE( canceldelay_test ) { try {
                             chain::canceldelay{{"tester"_n, config::active_name}, ids[0]});
 
    chain.set_transaction_headers(trx);
-   trx.sign(chain.get_private_key("tester"_n, "active"), chain.control->get_chain_id());
+   trx.sign(chain.get_private_key("tester"_n, "active"), chain.get_chain_id());
+   // first push as a dry_run trx
+   trace = chain.push_transaction(trx, fc::time_point::maximum(), base_tester::DEFAULT_BILLED_CPU_TIME_US, false, transaction_metadata::trx_type::dry_run);
+   BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
+   // now push for real
    trace = chain.push_transaction(trx);
-   //wdump((fc::json::to_pretty_string(trace)));
    BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
    gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(2, gen_size);
+   BOOST_CHECK_EQUAL(2u, gen_size);
 
    const auto& cidx = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>();
    auto citr = cidx.find( ids[0] );
    BOOST_CHECK_EQUAL( (citr == cidx.end()), true );
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
@@ -1925,18 +1542,18 @@ BOOST_AUTO_TEST_CASE( canceldelay_test ) { try {
    BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
 
    gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(2, gen_size);
+   BOOST_CHECK_EQUAL(2u, gen_size);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(2, gen_size);
+   BOOST_CHECK_EQUAL(2u, gen_size);
 
-   chain.produce_blocks();
+   chain.produce_block();
    // update auth will finally be performed
 
    gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(1, gen_size);
+   BOOST_CHECK_EQUAL(1u, gen_size);
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
@@ -1954,19 +1571,20 @@ BOOST_AUTO_TEST_CASE( canceldelay_test ) { try {
    BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
 
    gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(1, gen_size);
+   BOOST_CHECK_EQUAL(1u, gen_size);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("90.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("10.0000 CUR"), liquid_balance);
 
-   chain.produce_blocks(15);
+   chain.produce_block(fc::seconds(7));
+   chain.produce_block();
 
    gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(1, gen_size);
+   BOOST_CHECK_EQUAL(1u, gen_size);
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("90.0000 CUR"), liquid_balance);
@@ -1974,34 +1592,35 @@ BOOST_AUTO_TEST_CASE( canceldelay_test ) { try {
    BOOST_REQUIRE_EQUAL(asset::from_string("10.0000 CUR"), liquid_balance);
 
    // second transfer finally is performed
-   chain.produce_blocks();
+   chain.produce_block();
 
    gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(0, gen_size);
+   BOOST_CHECK_EQUAL(0u, gen_size);
 
    liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("85.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester2"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("15.0000 CUR"), liquid_balance);
-} FC_LOG_AND_RETHROW() }
+} FC_LOG_AND_RETHROW() } /// canceldelay_test
 
 // test canceldelay action under different permission levels
 BOOST_AUTO_TEST_CASE( canceldelay_test2 ) { try {
-   TESTER chain;
+   validating_tester_no_disable_deferred_trx chain;
+   chain.produce_block();
 
    const auto& tester_account = "tester"_n;
 
-   chain.produce_blocks();
+   chain.produce_block();
    chain.create_account("eosio.token"_n);
-   chain.produce_blocks();
+   chain.produce_block();
 
    chain.set_code("eosio.token"_n, test_contracts::eosio_token_wasm());
-   chain.set_abi("eosio.token"_n, test_contracts::eosio_token_abi().data());
+   chain.set_abi("eosio.token"_n, test_contracts::eosio_token_abi());
 
-   chain.produce_blocks();
+   chain.produce_block();
    chain.create_account("tester"_n);
    chain.create_account("tester2"_n);
-   chain.produce_blocks();
+   chain.produce_block();
 
    chain.push_action(config::system_account_name, updateauth::get_name(), tester_account, fc::mutable_variant_object()
            ("account", "tester")
@@ -2021,7 +1640,7 @@ BOOST_AUTO_TEST_CASE( canceldelay_test2 ) { try {
            ("type", "transfer")
            ("requirement", "first"));
 
-   chain.produce_blocks();
+   chain.produce_block();
    chain.push_action("eosio.token"_n, "create"_n, "eosio.token"_n, mutable_variant_object()
            ("issuer", eosio_token)
            ("maximum_supply", "9000000.0000 CUR")
@@ -2041,9 +1660,9 @@ BOOST_AUTO_TEST_CASE( canceldelay_test2 ) { try {
    );
    BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
    auto gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(0, gen_size);
+   BOOST_REQUIRE_EQUAL(0u, gen_size);
 
-   chain.produce_blocks();
+   chain.produce_block();
    auto liquid_balance = get_currency_balance(chain, "eosio.token"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("999900.0000 CUR"), liquid_balance);
    liquid_balance = get_currency_balance(chain, "tester"_n);
@@ -2063,14 +1682,14 @@ BOOST_AUTO_TEST_CASE( canceldelay_test2 ) { try {
       auto trx_id = trace->id;
       BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
       gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-      BOOST_REQUIRE_EQUAL(1, gen_size);
-      BOOST_REQUIRE_EQUAL(0, trace->action_traces.size());
+      BOOST_REQUIRE_EQUAL(1u, gen_size);
+      BOOST_REQUIRE_EQUAL(0u, trace->action_traces.size());
 
       const auto& idx = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>();
       auto itr = idx.find( trx_id );
       BOOST_CHECK_EQUAL( (itr != idx.end()), true );
 
-      chain.produce_blocks();
+      chain.produce_block();
 
       liquid_balance = get_currency_balance(chain, "tester"_n);
       BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
@@ -2083,7 +1702,7 @@ BOOST_AUTO_TEST_CASE( canceldelay_test2 ) { try {
          trx.actions.emplace_back(vector<permission_level>{{"tester"_n, config::active_name}},
                                   chain::canceldelay{{"tester"_n, config::active_name}, trx_id});
          chain.set_transaction_headers(trx);
-         trx.sign(chain.get_private_key("tester"_n, "active"), chain.control->get_chain_id());
+         trx.sign(chain.get_private_key("tester"_n, "active"), chain.get_chain_id());
          BOOST_REQUIRE_EXCEPTION( chain.push_transaction(trx), action_validate_exception,
                                   fc_exception_message_is("canceling_auth in canceldelay action was not found as authorization in the original delayed transaction") );
       }
@@ -2094,7 +1713,7 @@ BOOST_AUTO_TEST_CASE( canceldelay_test2 ) { try {
          trx.actions.emplace_back(vector<permission_level>{{"tester"_n, "second"_n}},
                                   chain::canceldelay{{"tester"_n, "first"_n}, trx_id});
          chain.set_transaction_headers(trx);
-         trx.sign(chain.get_private_key("tester"_n, "second"), chain.control->get_chain_id());
+         trx.sign(chain.get_private_key("tester"_n, "second"), chain.get_chain_id());
          BOOST_REQUIRE_THROW( chain.push_transaction(trx), irrelevant_auth_exception );
          BOOST_REQUIRE_EXCEPTION( chain.push_transaction(trx), irrelevant_auth_exception,
                                   fc_exception_message_starts_with("canceldelay action declares irrelevant authority") );
@@ -2105,18 +1724,20 @@ BOOST_AUTO_TEST_CASE( canceldelay_test2 ) { try {
       trx.actions.emplace_back(vector<permission_level>{{"tester"_n, config::active_name}},
                                chain::canceldelay{{"tester"_n, "first"_n}, trx_id});
       chain.set_transaction_headers(trx);
-      trx.sign(chain.get_private_key("tester"_n, "active"), chain.control->get_chain_id());
+      trx.sign(chain.get_private_key("tester"_n, "active"), chain.get_chain_id());
       trace = chain.push_transaction(trx);
 
       BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
       gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-      BOOST_REQUIRE_EQUAL(0, gen_size);
+      BOOST_REQUIRE_EQUAL(0u, gen_size);
 
       const auto& cidx = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>();
       auto citr = cidx.find( trx_id );
       BOOST_REQUIRE_EQUAL( (citr == cidx.end()), true );
 
-      chain.produce_blocks(10);
+      chain.produce_block();
+      chain.produce_block(fc::seconds(4));
+      chain.produce_block();
 
       liquid_balance = get_currency_balance(chain, "tester"_n);
       BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
@@ -2134,8 +1755,8 @@ BOOST_AUTO_TEST_CASE( canceldelay_test2 ) { try {
            30, 5
    );
 
-   chain.produce_blocks(11);
-
+   chain.produce_block();
+   chain.produce_block(fc::seconds(5));
 
    ilog("attempting second delayed transfer");
    {
@@ -2150,14 +1771,14 @@ BOOST_AUTO_TEST_CASE( canceldelay_test2 ) { try {
       auto trx_id = trace->id;
       BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
       auto gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-      BOOST_CHECK_EQUAL(1, gen_size);
-      BOOST_CHECK_EQUAL(0, trace->action_traces.size());
+      BOOST_CHECK_EQUAL(1u, gen_size);
+      BOOST_CHECK_EQUAL(0u, trace->action_traces.size());
 
       const auto& idx = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>();
       auto itr = idx.find( trx_id );
       BOOST_CHECK_EQUAL( (itr != idx.end()), true );
 
-      chain.produce_blocks();
+      chain.produce_block();
 
       liquid_balance = get_currency_balance(chain, "tester"_n);
       BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
@@ -2169,18 +1790,18 @@ BOOST_AUTO_TEST_CASE( canceldelay_test2 ) { try {
       trx.actions.emplace_back(vector<permission_level>{{"tester"_n, "first"_n}},
                                chain::canceldelay{{"tester"_n, "second"_n}, trx_id});
       chain.set_transaction_headers(trx);
-      trx.sign(chain.get_private_key("tester"_n, "first"), chain.control->get_chain_id());
+      trx.sign(chain.get_private_key("tester"_n, "first"), chain.get_chain_id());
       trace = chain.push_transaction(trx);
 
       BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
       gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-      BOOST_REQUIRE_EQUAL(0, gen_size);
+      BOOST_REQUIRE_EQUAL(0u, gen_size);
 
       const auto& cidx = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>();
       auto citr = cidx.find( trx_id );
       BOOST_REQUIRE_EQUAL( (citr == cidx.end()), true );
 
-      chain.produce_blocks(10);
+      chain.produce_block(fc::seconds(5));
 
       liquid_balance = get_currency_balance(chain, "tester"_n);
       BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
@@ -2202,14 +1823,14 @@ BOOST_AUTO_TEST_CASE( canceldelay_test2 ) { try {
       auto trx_id = trace->id;
       BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
       gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-      BOOST_REQUIRE_EQUAL(1, gen_size);
-      BOOST_REQUIRE_EQUAL(0, trace->action_traces.size());
+      BOOST_REQUIRE_EQUAL(1u, gen_size);
+      BOOST_REQUIRE_EQUAL(0u, trace->action_traces.size());
 
       const auto& idx = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>();
       auto itr = idx.find( trx_id );
       BOOST_CHECK_EQUAL( (itr != idx.end()), true );
 
-      chain.produce_blocks();
+      chain.produce_block();
 
       liquid_balance = get_currency_balance(chain, "tester"_n);
       BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
@@ -2222,7 +1843,7 @@ BOOST_AUTO_TEST_CASE( canceldelay_test2 ) { try {
          trx.actions.emplace_back(vector<permission_level>{{"tester"_n, "active"_n}},
                                   chain::canceldelay{{"tester"_n, config::owner_name}, trx_id});
          chain.set_transaction_headers(trx);
-         trx.sign(chain.get_private_key("tester"_n, "active"), chain.control->get_chain_id());
+         trx.sign(chain.get_private_key("tester"_n, "active"), chain.get_chain_id());
          BOOST_REQUIRE_THROW( chain.push_transaction(trx), irrelevant_auth_exception );
       }
 
@@ -2231,36 +1852,35 @@ BOOST_AUTO_TEST_CASE( canceldelay_test2 ) { try {
       trx.actions.emplace_back(vector<permission_level>{{"tester"_n, config::owner_name}},
                                chain::canceldelay{{"tester"_n, config::owner_name}, trx_id});
       chain.set_transaction_headers(trx);
-      trx.sign(chain.get_private_key("tester"_n, "owner"), chain.control->get_chain_id());
+      trx.sign(chain.get_private_key("tester"_n, "owner"), chain.get_chain_id());
       trace = chain.push_transaction(trx);
 
       BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
       gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-      BOOST_REQUIRE_EQUAL(0, gen_size);
+      BOOST_REQUIRE_EQUAL(0u, gen_size);
 
       const auto& cidx = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>();
       auto citr = cidx.find( trx_id );
       BOOST_REQUIRE_EQUAL( (citr == cidx.end()), true );
 
-      chain.produce_blocks(10);
+      chain.produce_block(fc::seconds(5));
 
       liquid_balance = get_currency_balance(chain, "tester"_n);
       BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
       liquid_balance = get_currency_balance(chain, "tester2"_n);
       BOOST_REQUIRE_EQUAL(asset::from_string("0.0000 CUR"), liquid_balance);
    }
-} FC_LOG_AND_RETHROW() }
-
+} FC_LOG_AND_RETHROW() } /// canceldelay_test2
 
 BOOST_AUTO_TEST_CASE( max_transaction_delay_create ) { try {
    //assuming max transaction delay is 45 days (default in config.hpp)
-   TESTER chain;
+   validating_tester chain;
 
    const auto& tester_account = "tester"_n;
 
-   chain.produce_blocks();
+   chain.produce_block();
    chain.create_account("tester"_n);
-   chain.produce_blocks(10);
+   chain.produce_block();
 
    BOOST_REQUIRE_EXCEPTION(
       chain.push_action(config::system_account_name, updateauth::get_name(), tester_account, fc::mutable_variant_object()
@@ -2271,23 +1891,16 @@ BOOST_AUTO_TEST_CASE( max_transaction_delay_create ) { try {
       action_validate_exception,
       fc_exception_message_starts_with("Cannot set delay longer than max_transacton_delay")
    );
-} FC_LOG_AND_RETHROW() }
+} FC_LOG_AND_RETHROW() } /// max_transaction_delay_create
 
 
 BOOST_AUTO_TEST_CASE( max_transaction_delay_execute ) { try {
    //assuming max transaction delay is 45 days (default in config.hpp)
-   TESTER chain;
-
+   validating_tester chain;
    const auto& tester_account = "tester"_n;
 
-   chain.create_account("eosio.token"_n);
-   chain.set_code("eosio.token"_n, test_contracts::eosio_token_wasm());
-   chain.set_abi("eosio.token"_n, test_contracts::eosio_token_abi().data());
+   create_accounts(chain);
 
-   chain.produce_blocks();
-   chain.create_account("tester"_n);
-
-   chain.produce_blocks();
    chain.push_action("eosio.token"_n, "create"_n, "eosio.token"_n, mutable_variant_object()
            ("issuer", "eosio.token" )
            ("maximum_supply", "9000000.0000 CUR" )
@@ -2314,7 +1927,7 @@ BOOST_AUTO_TEST_CASE( max_transaction_delay_execute ) { try {
                      ("requirement", "first"));
    BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
 
-   chain.produce_blocks();
+   chain.produce_block();
 
    //change max_transaction_delay to 60 sec
    auto params = chain.control->get_global_properties().configuration;
@@ -2322,31 +1935,21 @@ BOOST_AUTO_TEST_CASE( max_transaction_delay_execute ) { try {
    chain.push_action( config::system_account_name, "setparams"_n, config::system_account_name, mutable_variant_object()
                         ("params", params) );
 
-   chain.produce_blocks();
-   //should be able to create transaction with delay 60 sec, despite permission delay being 30 days, because max_transaction_delay is 60 sec
-   trace = chain.push_action("eosio.token"_n, name("transfer"), "tester"_n, fc::mutable_variant_object()
-                           ("from", "tester")
-                           ("to", "eosio.token")
-                           ("quantity", "9.0000 CUR")
-                           ("memo", "" ), 120, 60);
-   BOOST_REQUIRE_EQUAL(transaction_receipt::delayed, trace->receipt->status);
+   chain.produce_block();
+   //should be able to create a msig transaction with delay 60 sec, despite permission delay being 30 days, because max_transaction_delay is 60 sec
+   constexpr name proposal_name = "prop1"_n;
+   propose_approve_msig_token_transfer_trx(chain, proposal_name, { "tester"_n, config::active_name }, 60, "9.0000 CUR");
 
-   chain.produce_blocks();
-
-   auto gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_REQUIRE_EQUAL(1, gen_size);
-   BOOST_REQUIRE_EQUAL(0, trace->action_traces.size());
-
-   //check that the delayed transaction executed after after 60 sec
-   chain.produce_blocks(120);
-   gen_size = chain.control->db().get_index<generated_transaction_multi_index,by_trx_id>().size();
-   BOOST_CHECK_EQUAL(0, gen_size);
+   //check that the delayed msig transaction can be executed after 60 sec
+   chain.produce_block();
+   chain.produce_block(fc::seconds(60));
+   exec_msig_trx(chain, proposal_name, {{ "tester"_n, config::active_name }});
 
    //check that the transfer really happened
    auto liquid_balance = get_currency_balance(chain, "tester"_n);
    BOOST_REQUIRE_EQUAL(asset::from_string("91.0000 CUR"), liquid_balance);
 
-} FC_LOG_AND_RETHROW() }
+} FC_LOG_AND_RETHROW() } /// max_transaction_delay_execute
 
 BOOST_AUTO_TEST_CASE( test_blockchain_params_enabled ) { try {
    //since validation_tester activates all features here we will test how setparams works without
@@ -2356,55 +1959,15 @@ BOOST_AUTO_TEST_CASE( test_blockchain_params_enabled ) { try {
    //change max_transaction_delay to 60 sec
    auto params = chain.control->get_global_properties().configuration;
    params.max_transaction_delay = 60;
-   chain.push_action(config::system_account_name, 
+   chain.push_action(config::system_account_name,
                      "setparams"_n,
-                     config::system_account_name, 
+                     config::system_account_name,
                      mutable_variant_object()("params", params) );
-   
-   BOOST_CHECK_EQUAL(chain.control->get_global_properties().configuration.max_transaction_delay, 60);
 
-   chain.produce_blocks();
+   BOOST_CHECK_EQUAL(chain.control->get_global_properties().configuration.max_transaction_delay, 60u);
 
-} FC_LOG_AND_RETHROW() }
-
-BOOST_FIXTURE_TEST_CASE( delay_expired, validating_tester) { try {
-
-   produce_blocks(2);
-   signed_transaction trx;
-
-   account_name a = "newco"_n;
-   account_name creator = config::system_account_name;
-
-   auto owner_auth =  authority( get_public_key( a, "owner" ) );
-   trx.actions.emplace_back( vector<permission_level>{{creator,config::active_name}},
-                             newaccount{
-                                .creator  = creator,
-                                .name     = a,
-                                .owner    = owner_auth,
-                                .active   = authority( get_public_key( a, "active" ) )
-                             });
-   set_transaction_headers(trx);
-   trx.delay_sec = 3;
-   trx.expiration = control->head_block_time() + fc::microseconds(1000000);
-   trx.sign( get_private_key( creator, "active" ), control->get_chain_id()  );
-
-   auto trace = push_transaction( trx );
-
-   BOOST_REQUIRE_EQUAL(transaction_receipt_header::delayed, trace->receipt->status);
-
-   signed_block_ptr sb = produce_block();
-
-   sb  = produce_block();
-
-   BOOST_REQUIRE_EQUAL(transaction_receipt_header::delayed, trace->receipt->status);
-   produce_empty_block(fc::milliseconds(610 * 1000));
-   sb  = produce_block();
-   BOOST_REQUIRE_EQUAL(1, sb->transactions.size());
-   BOOST_REQUIRE_EQUAL(transaction_receipt_header::expired, sb->transactions[0].status);
-
-   create_account(a); // account can still be created
+   chain.produce_block();
 
 } FC_LOG_AND_RETHROW() }
-
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -1,5 +1,6 @@
 #include <eosio/chain/webassembly/eos-vm.hpp>
 #include <eosio/chain/webassembly/interface.hpp>
+#include <eosio/chain/account_object.hpp>
 #include <eosio/chain/apply_context.hpp>
 #include <eosio/chain/transaction_context.hpp>
 #include <eosio/chain/global_property_object.hpp>
@@ -26,9 +27,10 @@ namespace {
      template<typename F>
      struct guard {
         guard(transaction_checktime_timer& timer, F&& func)
-           : _timer(timer), _func(static_cast<F&&>(func)) {
+           : _timer(timer), _func(std::forward<F>(func)) {
            _timer.set_expiration_callback(&callback, this);
-           if(_timer.expired) {
+           platform_timer::state_t expired = _timer.timer_state();
+           if(expired == platform_timer::state_t::timed_out || expired == platform_timer::state_t::interrupted) {
               _func(); // it's harmless if _func is invoked twice
            }
         }
@@ -44,7 +46,7 @@ namespace {
      };
      template<typename F>
      guard<F> scoped_run(F&& func) {
-        return guard{_timer, static_cast<F&&>(func)};
+        return guard{_timer, std::forward<F>(func)};
      }
      transaction_checktime_timer& _timer;
   };
@@ -128,8 +130,19 @@ class eos_vm_instantiated_module : public wasm_instantiated_module_interface {
          _instantiated_module(std::move(mod)) {}
 
       void apply(apply_context& context) override {
-         _instantiated_module->set_wasm_allocator(&context.control.get_wasm_allocator());
-         _runtime->_bkend = _instantiated_module.get();
+         // set up backend to share the compiled mod in the instantiated
+         // module of the contract
+         _runtime->_bkend.share(*_instantiated_module);
+         // set exec ctx's mod to instantiated module's mod
+         _runtime->_exec_ctx.set_module(&(_instantiated_module->get_module()));
+         // link exe ctx to backend
+         _runtime->_bkend.set_context(&_runtime->_exec_ctx);
+         // set max_call_depth and max_pages to original values
+         _runtime->_bkend.reset_max_call_depth();
+         _runtime->_bkend.reset_max_pages();
+         // set wasm allocator per apply data
+         _runtime->_bkend.set_wasm_allocator(&context.control.get_wasm_allocator());
+
          apply_options opts;
          if(context.control.is_builtin_activated(builtin_protocol_feature_t::configurable_wasm_limits)) {
             const wasm_config& config = context.control.get_global_properties().wasm_configuration;
@@ -137,8 +150,8 @@ class eos_vm_instantiated_module : public wasm_instantiated_module_interface {
          }
          auto fn = [&]() {
             eosio::chain::webassembly::interface iface(context);
-            _runtime->_bkend->initialize(&iface, opts);
-            _runtime->_bkend->call(
+            _runtime->_bkend.initialize(&iface, opts);
+            _runtime->_bkend.call(
                 iface, "env", "apply",
                 context.get_receiver().to_uint64_t(),
                 context.get_action().account.to_uint64_t(),
@@ -146,15 +159,14 @@ class eos_vm_instantiated_module : public wasm_instantiated_module_interface {
          };
          try {
             checktime_watchdog wd(context.trx_context.transaction_timer);
-            _runtime->_bkend->timed_run(wd, fn);
+            _runtime->_bkend.timed_run(std::move(wd), std::move(fn));
          } catch(eosio::vm::timeout_exception&) {
             context.trx_context.checktime();
          } catch(eosio::vm::wasm_memory_exception& e) {
-            FC_THROW_EXCEPTION(wasm_execution_error, "access violation");
+            FC_THROW_EXCEPTION(wasm_execution_error, "access violation: ${d}", ("d", e.detail()));
          } catch(eosio::vm::exception& e) {
-            FC_THROW_EXCEPTION(wasm_execution_error, "eos-vm system failure");
+            FC_THROW_EXCEPTION(wasm_execution_error, "eos-vm system failure: ${d}", ("d", e.detail()));
          }
-         _runtime->_bkend = nullptr;
       }
 
    private:
@@ -191,7 +203,7 @@ class eos_vm_profiling_module : public wasm_instantiated_module_interface {
          try {
             scoped_profile profile_runner(prof);
             checktime_watchdog wd(context.trx_context.transaction_timer);
-            _instantiated_module->timed_run(wd, fn);
+            _instantiated_module->timed_run(std::move(wd), std::move(fn));
          } catch(eosio::vm::timeout_exception&) {
             context.trx_context.checktime();
          } catch(eosio::vm::wasm_memory_exception& e) {
@@ -199,10 +211,6 @@ class eos_vm_profiling_module : public wasm_instantiated_module_interface {
          } catch(eosio::vm::exception& e) {
             FC_THROW_EXCEPTION(wasm_execution_error, "eos-vm system failure");
          }
-      }
-
-      void fast_shutdown() override {
-         _prof.clear();
       }
 
       profile_data* start(apply_context& context) {
@@ -242,7 +250,13 @@ std::unique_ptr<wasm_instantiated_module_interface> eos_vm_runtime<Impl>::instan
       wasm_code_ptr code((uint8_t*)code_bytes, code_size);
       apply_options options = { .max_pages = 65536,
                                 .max_call_depth = 0 };
-      std::unique_ptr<backend_t> bkend = std::make_unique<backend_t>(code, code_size, nullptr, options, false); // uses 2-passes parsing
+      std::unique_ptr<backend_t> bkend = nullptr;
+#ifdef EOSIO_EOS_VM_JIT_RUNTIME_ENABLED
+      if constexpr (std::is_same_v<Impl, eosio::vm::jit>)
+         bkend = std::make_unique<backend_t>(code, code_size, nullptr, options, true, false); // true, false <--> single parsing, backend does not own execution context (execution context is reused per thread)
+      else
+#endif
+         bkend = std::make_unique<backend_t>(code, code_size, nullptr, options, false, false); // false, false <--> 2-passes parsing, backend does not own execution context (execution context is reused per thread)
       eos_vm_host_functions_t::resolve(bkend->get_module());
       return std::make_unique<eos_vm_instantiated_module<Impl>>(this, std::move(bkend));
    } catch(eosio::vm::exception& e) {
@@ -264,7 +278,7 @@ std::unique_ptr<wasm_instantiated_module_interface> eos_vm_profile_runtime::inst
       wasm_code_ptr code((uint8_t*)code_bytes, code_size);
       apply_options options = { .max_pages = 65536,
                                 .max_call_depth = 0 };
-      std::unique_ptr<backend_t> bkend = std::make_unique<backend_t>(code, code_size, nullptr, options, false); // uses 2-passes parsing
+      std::unique_ptr<backend_t> bkend = std::make_unique<backend_t>(code, code_size, nullptr, options, true, false); // true, false <--> single parsing, backend does not own execution context (execution context is reused per thread)
       eos_vm_host_functions_t::resolve(bkend->get_module());
       return std::make_unique<eos_vm_profiling_module>(std::move(bkend), code_bytes, code_size);
    } catch(eosio::vm::exception& e) {
@@ -273,6 +287,10 @@ std::unique_ptr<wasm_instantiated_module_interface> eos_vm_profile_runtime::inst
 }
 #endif
 
+template<typename Impl>
+thread_local typename eos_vm_runtime<Impl>::context_t eos_vm_runtime<Impl>::_exec_ctx;
+template<typename Impl>
+thread_local eos_vm_backend_t<Impl> eos_vm_runtime<Impl>::_bkend;
 }
 
 template <auto HostFunction, typename... Preconditions>
@@ -348,6 +366,7 @@ REGISTER_LEGACY_HOST_FUNCTION(get_blockchain_parameters_packed, privileged_check
 REGISTER_LEGACY_HOST_FUNCTION(set_blockchain_parameters_packed, privileged_check);
 REGISTER_HOST_FUNCTION(is_privileged, privileged_check);
 REGISTER_HOST_FUNCTION(set_privileged, privileged_check);
+REGISTER_HOST_FUNCTION(set_finalizers, privileged_check);
 
 // softfloat api
 REGISTER_INJECTED_HOST_FUNCTION(_eosio_f32_add);
@@ -620,6 +639,18 @@ REGISTER_CF_HOST_FUNCTION( mod_exp );
 REGISTER_CF_HOST_FUNCTION( blake2_f );
 REGISTER_CF_HOST_FUNCTION( sha3 );
 REGISTER_CF_HOST_FUNCTION( k1_recover );
+
+// bls_primitives protocol feature
+REGISTER_CF_HOST_FUNCTION( bls_g1_add );
+REGISTER_CF_HOST_FUNCTION( bls_g2_add );
+REGISTER_CF_HOST_FUNCTION( bls_g1_weighted_sum );
+REGISTER_CF_HOST_FUNCTION( bls_g2_weighted_sum );
+REGISTER_CF_HOST_FUNCTION( bls_pairing );
+REGISTER_CF_HOST_FUNCTION( bls_g1_map );
+REGISTER_CF_HOST_FUNCTION( bls_g2_map );
+REGISTER_CF_HOST_FUNCTION( bls_fp_mod );
+REGISTER_CF_HOST_FUNCTION( bls_fp_mul );
+REGISTER_CF_HOST_FUNCTION( bls_fp_exp ); 
 
 } // namespace webassembly
 } // namespace chain

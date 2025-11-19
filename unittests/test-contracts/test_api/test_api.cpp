@@ -6,6 +6,7 @@
 #include "test_action.cpp"
 #include "test_chain.cpp"
 #include "test_checktime.cpp"
+#include "test_compiler_builtins.cpp"
 #include "test_crypto.cpp"
 #include "test_datastream.cpp"
 #include "test_permission.cpp"
@@ -47,8 +48,24 @@ extern "C" {
       WASM_TEST_HANDLER( test_types, char_to_symbol );
       WASM_TEST_HANDLER( test_types, string_to_name );
 
+      //test_compiler_builtins
+      WASM_TEST_HANDLER( test_compiler_builtins, test_multi3       );
+      WASM_TEST_HANDLER( test_compiler_builtins, test_divti3       );
+      WASM_TEST_HANDLER( test_compiler_builtins, test_divti3_by_0  );
+      WASM_TEST_HANDLER( test_compiler_builtins, test_udivti3      );
+      WASM_TEST_HANDLER( test_compiler_builtins, test_udivti3_by_0 );
+      WASM_TEST_HANDLER( test_compiler_builtins, test_modti3       );
+      WASM_TEST_HANDLER( test_compiler_builtins, test_modti3_by_0  );
+      WASM_TEST_HANDLER( test_compiler_builtins, test_umodti3      );
+      WASM_TEST_HANDLER( test_compiler_builtins, test_umodti3_by_0 );
+      WASM_TEST_HANDLER( test_compiler_builtins, test_lshlti3      );
+      WASM_TEST_HANDLER( test_compiler_builtins, test_lshrti3      );
+      WASM_TEST_HANDLER( test_compiler_builtins, test_ashlti3      );
+      WASM_TEST_HANDLER( test_compiler_builtins, test_ashrti3      );
+
       //test_action
       WASM_TEST_HANDLER   ( test_action, read_action_normal         );
+      WASM_TEST_HANDLER   ( test_action, read_action                );
       WASM_TEST_HANDLER   ( test_action, read_action_to_0           );
       WASM_TEST_HANDLER   ( test_action, read_action_to_64k         );
       WASM_TEST_HANDLER_EX( test_action, require_notice             );
@@ -118,6 +135,8 @@ extern "C" {
       WASM_TEST_HANDLER   ( test_transaction, send_action_empty                      );
       WASM_TEST_HANDLER   ( test_transaction, send_action_large                      );
       WASM_TEST_HANDLER   ( test_transaction, send_action_4k                         );
+      WASM_TEST_HANDLER   ( test_transaction, send_action_512k                       );
+      WASM_TEST_HANDLER   ( test_transaction, send_many_actions_512k                 );
       WASM_TEST_HANDLER   ( test_transaction, send_action_recurse                    );
       WASM_TEST_HANDLER   ( test_transaction, test_read_transaction                  );
       WASM_TEST_HANDLER   ( test_transaction, test_transaction_size                  );

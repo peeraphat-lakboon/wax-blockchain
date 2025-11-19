@@ -1,4 +1,4 @@
-cmake_minimum_required( VERSION 3.8 )
+cmake_minimum_required( VERSION 3.16 )
 project(unittest_contracts)
 
 
@@ -21,8 +21,10 @@ elseif( USE_EOSIO_CDT_1_8_X )
     add_definitions(-DUSE_EOSIO_CDT_1_8_X=true)
 endif()
 
+add_subdirectory(eosio.boot)
 add_subdirectory(eosio.msig)
 add_subdirectory(eosio.system)
 add_subdirectory(eosio.token)
 add_subdirectory(eosio.wrap)
 add_subdirectory(eosio.mechanics)
+add_subdirectory(jumborow)

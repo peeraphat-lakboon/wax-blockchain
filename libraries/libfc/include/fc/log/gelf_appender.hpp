@@ -17,8 +17,8 @@ namespace fc
     {
       static const std::vector<std::string> reserved_field_names;
       static const std::regex user_field_name_pattern;
-      string endpoint = "127.0.0.1:12201";
-      string host = "fc"; // the name of the host, source or application that sent this message (just passed through to GELF server)
+      std::string endpoint = "127.0.0.1:12201";
+      std::string host = "fc"; // the name of the host, source or application that sent this message (just passed through to GELF server)
       variant_object user_fields = {};
     };
 
@@ -28,7 +28,7 @@ namespace fc
      *
      * \warning If this method is not called, this appender will log nothing.
      *
-     * In a single-threaded world with a boost::io_service that's not owned
+     * In a single-threaded world with a boost::io_context that's not owned
      * by this library, ugly things are required.  Tough.
      */
     void initialize() override;

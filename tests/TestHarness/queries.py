@@ -11,7 +11,7 @@ import urllib.parse
 import urllib.error
 
 from .core_symbol import CORE_SYMBOL
-from .testUtils import Account
+from .accounts import Account
 from .testUtils import EnumType
 from .testUtils import addEnum
 from .testUtils import ReturnType
@@ -242,7 +242,7 @@ class NodeosQueries:
         assert(isinstance(transId, str))
         exitOnErrorForDelayed=not delayedRetry and exitOnError
         timeout=3
-        cmdDesc=self.fetchTransactionCommand()
+        cmdDesc="get transaction_trace"
         cmd="%s %s" % (cmdDesc, transId)
         msg="(transaction id=%s)" % (transId);
         for i in range(0,(int(60/timeout) - 1)):
@@ -256,14 +256,14 @@ class NodeosQueries:
         # either it is there or the transaction has timed out
         return self.processCleosCmd(cmd, cmdDesc, silentErrors=silentErrors, exitOnError=exitOnError, exitMsg=msg)
 
-    def isTransInBlock(self, transId, blockId):
+    def isTransInBlock(self, transId, blockId, exitOnError=False):
         """Check if transId is within block identified by blockId"""
         assert(transId)
         assert(isinstance(transId, str))
         assert(blockId)
         assert(isinstance(blockId, int))
 
-        block=self.getBlock(blockId, exitOnError=True)
+        block=self.getBlock(blockId, exitOnError=exitOnError)
 
         transactions=None
         key=""
@@ -271,8 +271,9 @@ class NodeosQueries:
             key="[transactions]"
             transactions=block["transactions"]
         except (AssertionError, TypeError, KeyError) as _:
-            Utils.Print("block%s not found. Block: %s" % (key,block))
-            raise
+            if exitOnError:
+                Utils.Print("block%s not found. Block: %s" % (key,block))
+                raise
 
         if transactions is not None:
             for trans in transactions:
@@ -295,9 +296,9 @@ class NodeosQueries:
         refBlockNum=None
         key=""
         try:
-            key = self.fetchKeyCommand()
-            refBlockNum = self.fetchRefBlock(trans)
-            refBlockNum=int(refBlockNum)+1
+            key = "[transaction][transaction_header][ref_block_num]"
+            refBlockNum = trans["block_num"]
+            refBlockNum=int(refBlockNum)
         except (TypeError, ValueError, KeyError) as _:
             Utils.Print("transaction%s not found. Transaction: %s" % (key, trans))
             return None
@@ -313,17 +314,17 @@ class NodeosQueries:
         if Utils.Debug: Utils.Print("Reference block num %d, Head block num: %d" % (refBlockNum, headBlockNum))
         for blockNum in range(refBlockNum, headBlockNum + blocksAhead):
             self.waitForBlock(blockNum)
-            if self.isTransInBlock(transId, blockNum):
+            if self.isTransInBlock(transId, blockNum, exitOnError=exitOnError):
                 if Utils.Debug: Utils.Print("Found transaction %s in block %d" % (transId, blockNum))
                 return blockNum
 
         return None
 
-    def isTransInAnyBlock(self, transId: str):
+    def isTransInAnyBlock(self, transId: str, exitOnError=True):
         """Check if transaction (transId) is in a block."""
         assert(transId)
         assert(isinstance(transId, str))
-        blockId=self.getBlockNumByTransId(transId)
+        blockId=self.getBlockNumByTransId(transId, exitOnError=exitOnError)
         return True if blockId else False
 
     def isTransFinalized(self, transId):
@@ -347,7 +348,7 @@ class NodeosQueries:
 
     def getTable(self, contract, scope, table, exitOnError=False):
         cmdDesc = "get table"
-        cmd=f"{cmdDesc} {self.cleosLimit} {contract} {scope} {table}"
+        cmd=f"{cmdDesc} --time-limit 999 {contract} {scope} {table}"
         msg=f"contract={contract}, scope={scope}, table={table}"
         return self.processCleosCmd(cmd, cmdDesc, exitOnError=exitOnError, exitMsg=msg)
 
@@ -596,7 +597,7 @@ class NodeosQueries:
 
         return trans
 
-    def processUrllibRequest(self, resource, command, payload={}, silentErrors=False, exitOnError=False, exitMsg=None, returnType=ReturnType.json, method="POST", endpoint=None):
+    def processUrllibRequest(self, resource, command, payload={}, silentErrors=False, exitOnError=False, exitMsg=None, returnType=ReturnType.json, method="POST", endpoint=None, prettyPrint=False, printReturnLimit=1024):
         if not endpoint:
             endpoint = self.endpointHttp
         cmd = f"{endpoint}/v1/{resource}/{command}"
@@ -625,8 +626,10 @@ class NodeosQueries:
             if Utils.Debug:
                 end=time.perf_counter()
                 Utils.Print("cmd Duration: %.3f sec" % (end-start))
-                printReturn=json.dumps(rtn) if returnType==ReturnType.json else rtn
-                Utils.Print("cmd returned: %s" % (printReturn[:1024]))
+                indent = 2 if prettyPrint else None
+                separators = (', ',': ') if prettyPrint else (',',':')
+                printReturn=json.dumps(rtn, indent=indent, separators=separators) if returnType==ReturnType.json else rtn
+                Utils.Print("cmd returned: %s" % (printReturn[:printReturnLimit]))
         except urllib.error.HTTPError as ex:
             if not silentErrors:
                 end=time.perf_counter()
@@ -689,7 +692,8 @@ class NodeosQueries:
     def getIrreversibleBlockNum(self):
         info = self.getInfo(exitOnError=True)
         if info is not None:
-            Utils.Print("current lib: %d" % (info["last_irreversible_block_num"]))
+            if Utils.Debug:
+                Utils.Print("current lib: %d" % (info["last_irreversible_block_num"]))
             return info["last_irreversible_block_num"]
 
     def getBlockNum(self, blockType=BlockType.head):
@@ -705,12 +709,29 @@ class NodeosQueries:
         if waitForBlock:
             self.waitForBlock(blockNum, timeout=timeout, blockType=BlockType.head)
         block=self.getBlock(blockNum, exitOnError=exitOnError)
+        if block is None:
+            if exitOnError:
+                Utils.errorExit(f"getBlock returned None for {blockNum}")
+            else:
+                return None
         return NodeosQueries.getBlockAttribute(block, "producer", blockNum, exitOnError=exitOnError)
 
     def getBlockProducer(self, timeout=None, waitForBlock=True, exitOnError=True, blockType=BlockType.head):
         blockNum=self.getBlockNum(blockType=blockType)
         block=self.getBlock(blockNum, exitOnError=exitOnError, blockType=blockType)
+        if block is None:
+            if exitOnError:
+                Utils.errorExit(f"getBlock returned None for {blockNum}")
+            else:
+                return None
         return NodeosQueries.getBlockAttribute(block, "producer", blockNum, exitOnError=exitOnError)
+
+    def getProducerSchedule(self):
+        scheduled_producers = []
+        schedule = self.processUrllibRequest("chain", "get_producer_schedule")
+        for prod in schedule["payload"]["active"]["producers"]:
+            scheduled_producers.append(prod["producer_name"])
+        return scheduled_producers
 
     def getNextCleanProductionCycle(self, trans):
         rounds=21*12*2  # max time to ensure that at least 2/3+1 of producers x blocks per producer x at least 2 times

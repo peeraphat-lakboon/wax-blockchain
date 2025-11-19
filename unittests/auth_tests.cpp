@@ -9,11 +9,7 @@
 
 #include <eosio/testing/tester_network.hpp>
 
-#ifdef NON_VALIDATING_TEST
-#define TESTER tester
-#else
-#define TESTER validating_tester
-#endif
+#include <test_contracts.hpp>
 
 using namespace eosio;
 using namespace eosio::chain;
@@ -21,37 +17,43 @@ using namespace eosio::testing;
 
 BOOST_AUTO_TEST_SUITE(auth_tests)
 
-BOOST_FIXTURE_TEST_CASE( missing_sigs, TESTER ) { try {
-   create_accounts( {"alice"_n} );
-   produce_block();
+BOOST_AUTO_TEST_CASE_TEMPLATE( missing_sigs, TESTER, validating_testers ) { try {
+   TESTER chain;
 
-   BOOST_REQUIRE_THROW( push_reqauth( "alice"_n, {permission_level{"alice"_n, config::active_name}}, {} ), unsatisfied_authorization );
-   auto trace = push_reqauth("alice"_n, "owner");
+   chain.create_accounts( {"alice"_n} );
+   chain.produce_block();
 
-   produce_block();
-   BOOST_REQUIRE_EQUAL(true, chain_has_transaction(trace->id));
+   BOOST_REQUIRE_THROW( chain.push_reqauth( "alice"_n, {permission_level{"alice"_n, config::active_name}}, {} ), unsatisfied_authorization );
+   auto trace = chain.push_reqauth("alice"_n, "owner");
+
+   chain.produce_block();
+   BOOST_REQUIRE_EQUAL(true, chain.chain_has_transaction(trace->id));
 
 } FC_LOG_AND_RETHROW() } /// missing_sigs
 
-BOOST_FIXTURE_TEST_CASE( missing_multi_sigs, TESTER ) { try {
-    produce_block();
-    create_account("alice"_n, config::system_account_name, true);
-    produce_block();
+BOOST_AUTO_TEST_CASE_TEMPLATE( missing_multi_sigs, TESTER, validating_testers ) { try {
+    TESTER chain;
 
-    BOOST_REQUIRE_THROW(push_reqauth("alice"_n, "owner"), unsatisfied_authorization); // without multisig
-    auto trace = push_reqauth("alice"_n, "owner", true); // with multisig
+    chain.produce_block();
+    chain.create_account("alice"_n, config::system_account_name, true);
+    chain.produce_block();
 
-    produce_block();
-    BOOST_REQUIRE_EQUAL(true, chain_has_transaction(trace->id));
+    BOOST_REQUIRE_THROW(chain.push_reqauth("alice"_n, "owner"), unsatisfied_authorization); // without multisig
+    auto trace = chain.push_reqauth("alice"_n, "owner", true); // with multisig
+
+    chain.produce_block();
+    BOOST_REQUIRE_EQUAL(true, chain.chain_has_transaction(trace->id));
 
  } FC_LOG_AND_RETHROW() } /// missing_multi_sigs
 
-BOOST_FIXTURE_TEST_CASE( missing_auths, TESTER ) { try {
-   create_accounts( {"alice"_n, "bob"_n} );
-   produce_block();
+BOOST_AUTO_TEST_CASE_TEMPLATE( missing_auths, TESTER, validating_testers ) { try {
+   TESTER chain;
+
+   chain.create_accounts( {"alice"_n, "bob"_n} );
+   chain.produce_block();
 
    /// action not provided from authority
-   BOOST_REQUIRE_THROW( push_reqauth( "alice"_n, {permission_level{"bob"_n, config::active_name}}, { get_private_key("bob"_n, "active") } ), missing_auth_exception);
+   BOOST_REQUIRE_THROW( chain.push_reqauth( "alice"_n, {permission_level{"bob"_n, config::active_name}}, { chain.get_private_key("bob"_n, "active") } ), missing_auth_exception);
 
 } FC_LOG_AND_RETHROW() } /// transfer_test
 
@@ -59,43 +61,45 @@ BOOST_FIXTURE_TEST_CASE( missing_auths, TESTER ) { try {
  *  This test case will attempt to allow one account to transfer on behalf
  *  of another account by updating the active authority.
  */
-BOOST_FIXTURE_TEST_CASE( delegate_auth, TESTER ) { try {
-   create_accounts( {"alice"_n,"bob"_n});
-   produce_block();
+BOOST_AUTO_TEST_CASE_TEMPLATE( delegate_auth, TESTER, validating_testers ) { try {
+   TESTER chain;
+
+   chain.create_accounts( {"alice"_n,"bob"_n});
+   chain.produce_block();
 
    auto delegated_auth = authority( 1, {},
                           {
                             { .permission = {"bob"_n,config::active_name}, .weight = 1}
                           });
 
-   auto original_auth = static_cast<authority>(control->get_authorization_manager().get_permission({"alice"_n, config::active_name}).auth);
+   auto original_auth = chain.control->get_authorization_manager().get_permission({"alice"_n, config::active_name}).auth.to_authority();
    wdump((original_auth));
 
-   set_authority( "alice"_n, config::active_name,  delegated_auth );
+   chain.set_authority( "alice"_n, config::active_name,  delegated_auth );
 
-   auto new_auth = static_cast<authority>(control->get_authorization_manager().get_permission({"alice"_n, config::active_name}).auth);
+   auto new_auth = chain.control->get_authorization_manager().get_permission({"alice"_n, config::active_name}).auth.to_authority();
    wdump((new_auth));
    BOOST_CHECK_EQUAL((new_auth == delegated_auth), true);
 
-   produce_block();
-   produce_block();
+   chain.produce_block();
+   chain.produce_block();
 
-   auto auth = static_cast<authority>(control->get_authorization_manager().get_permission({"alice"_n, config::active_name}).auth);
+   auto auth = chain.control->get_authorization_manager().get_permission({"alice"_n, config::active_name}).auth.to_authority();
    wdump((auth));
    BOOST_CHECK_EQUAL((new_auth == auth), true);
 
    /// execute nonce from alice signed by bob
-   auto trace = push_reqauth("alice"_n, {permission_level{"alice"_n, config::active_name}}, { get_private_key("bob"_n, "active") } );
+   auto trace = chain.push_reqauth("alice"_n, {permission_level{"alice"_n, config::active_name}}, { chain.get_private_key("bob"_n, "active") } );
 
-   produce_block();
+   chain.produce_block();
    //todoBOOST_REQUIRE_EQUAL(true, chain_has_transaction(trace->id));
 
 } FC_LOG_AND_RETHROW() }
 
 
-BOOST_AUTO_TEST_CASE(update_auths) {
-try {
+BOOST_AUTO_TEST_CASE_TEMPLATE( update_auths, TESTER, validating_testers ) { try {
    TESTER chain;
+
    chain.create_account(name("alice"));
    chain.create_account(name("bob"));
 
@@ -107,12 +111,12 @@ try {
    const auto new_owner_priv_key = chain.get_private_key(name("alice"), "new_owner");
    const auto new_owner_pub_key = new_owner_priv_key.get_public_key();
    chain.set_authority(name("alice"), name("owner"), authority(new_owner_pub_key), {});
-   chain.produce_blocks();
+   chain.produce_block();
 
    // Ensure the permission is updated
    permission_object::id_type owner_id;
    {
-      auto obj = chain.find<permission_object, by_owner>(boost::make_tuple(name("alice"), name("owner")));
+      auto obj = chain.template find<permission_object, by_owner>(boost::make_tuple(name("alice"), name("owner")));
       BOOST_TEST(obj != nullptr);
       BOOST_TEST(obj->owner == name("alice"));
       BOOST_TEST(obj->name == name("owner"));
@@ -122,6 +126,7 @@ try {
       BOOST_TEST(auth.threshold == 1u);
       BOOST_TEST(auth.keys.size() == 1u);
       BOOST_TEST(auth.accounts.size() == 0u);
+      BOOST_TEST(auth.keys[0].key.to_string({}) == new_owner_pub_key.to_string({}));
       BOOST_TEST(auth.keys[0].key == new_owner_pub_key);
       BOOST_TEST(auth.keys[0].weight == 1);
    }
@@ -131,10 +136,10 @@ try {
    const auto new_active_pub_key = new_active_priv_key.get_public_key();
    chain.set_authority(name("alice"), name("active"), authority(new_active_pub_key), name("owner"),
                        { permission_level{name("alice"), name("active")} }, { chain.get_private_key(name("alice"), "active") });
-   chain.produce_blocks();
+   chain.produce_block();
 
    {
-      auto obj = chain.find<permission_object, by_owner>(boost::make_tuple(name("alice"), name("active")));
+      auto obj = chain.template find<permission_object, by_owner>(boost::make_tuple(name("alice"), name("active")));
       BOOST_TEST(obj != nullptr);
       BOOST_TEST(obj->owner == name("alice"));
       BOOST_TEST(obj->name == name("active"));
@@ -161,43 +166,43 @@ try {
    // Create new spending auth
    chain.set_authority(name("alice"), name("spending"), authority(spending_pub_key), name("active"),
                        { permission_level{name("alice"), name("active")} }, { new_active_priv_key });
-   chain.produce_blocks();
+   chain.produce_block();
    {
-      auto obj = chain.find<permission_object, by_owner>(boost::make_tuple(name("alice"), name("spending")));
+      auto obj = chain.template find<permission_object, by_owner>(boost::make_tuple(name("alice"), name("spending")));
       BOOST_TEST(obj != nullptr);
       BOOST_TEST(obj->owner == name("alice"));
       BOOST_TEST(obj->name == name("spending"));
-      BOOST_TEST(chain.get<permission_object>(obj->parent).owner == name("alice"));
-      BOOST_TEST(chain.get<permission_object>(obj->parent).name == name("active"));
+      BOOST_TEST(chain.template get<permission_object>(obj->parent).owner == name("alice"));
+      BOOST_TEST(chain.template get<permission_object>(obj->parent).name == name("active"));
    }
 
    // Update spending auth parent to be its own, should fail
-   BOOST_CHECK_THROW(chain.set_authority(name("alice"), name("spending"), spending_pub_key, name("spending"),
+   BOOST_CHECK_THROW(chain.set_authority(name("alice"), name("spending"), authority{spending_pub_key}, name("spending"),
                                          { permission_level{name("alice"), name("spending")} }, { spending_priv_key }), action_validate_exception);
    // Update spending auth parent to be owner, should fail
-   BOOST_CHECK_THROW(chain.set_authority(name("alice"), name("spending"), spending_pub_key, name("owner"),
+   BOOST_CHECK_THROW(chain.set_authority(name("alice"), name("spending"), authority{spending_pub_key}, name("owner"),
                                          { permission_level{name("alice"), name("spending")} }, { spending_priv_key }), action_validate_exception);
 
    // Remove spending auth
    chain.delete_authority(name("alice"), name("spending"), { permission_level{name("alice"), name("active")} }, { new_active_priv_key });
    {
-      auto obj = chain.find<permission_object, by_owner>(boost::make_tuple(name("alice"), name("spending")));
+      auto obj = chain.template find<permission_object, by_owner>(boost::make_tuple(name("alice"), name("spending")));
       BOOST_TEST(obj == nullptr);
    }
-   chain.produce_blocks();
+   chain.produce_block();
 
    // Create new trading auth
-   chain.set_authority(name("alice"), name("trading"), trading_pub_key, name("active"),
+   chain.set_authority(name("alice"), name("trading"), authority{trading_pub_key}, name("active"),
                        { permission_level{name("alice"), name("active")} }, { new_active_priv_key });
    // Recreate spending auth again, however this time, it's under trading instead of owner
-   chain.set_authority(name("alice"), name("spending"), spending_pub_key, name("trading"),
+   chain.set_authority(name("alice"), name("spending"), authority{spending_pub_key}, name("trading"),
                        { permission_level{name("alice"), name("trading")} }, { trading_priv_key });
-   chain.produce_blocks();
+   chain.produce_block();
 
    // Verify correctness of trading and spending
    {
-      const auto* trading = chain.find<permission_object, by_owner>(boost::make_tuple(name("alice"), name("trading")));
-      const auto* spending = chain.find<permission_object, by_owner>(boost::make_tuple(name("alice"), name("spending")));
+      const auto* trading = chain.template find<permission_object, by_owner>(boost::make_tuple(name("alice"), name("trading")));
+      const auto* spending = chain.template find<permission_object, by_owner>(boost::make_tuple(name("alice"), name("spending")));
       BOOST_TEST(trading != nullptr);
       BOOST_TEST(spending != nullptr);
       BOOST_TEST(trading->owner == name("alice"));
@@ -214,21 +219,20 @@ try {
    BOOST_CHECK_THROW(chain.delete_authority(name("alice"), name("trading"),
                                             { permission_level{name("alice"), name("active")} }, { new_active_priv_key }), action_validate_exception);
    // Update trading parent to be spending, should fail since changing parent authority is not supported
-   BOOST_CHECK_THROW(chain.set_authority(name("alice"), name("trading"), trading_pub_key, name("spending"),
+   BOOST_CHECK_THROW(chain.set_authority(name("alice"), name("trading"), authority{trading_pub_key}, name("spending"),
                                          { permission_level{name("alice"), name("trading")} }, { trading_priv_key }), action_validate_exception);
 
    // Delete spending auth
    chain.delete_authority(name("alice"), name("spending"), { permission_level{name("alice"), name("active")} }, { new_active_priv_key });
-   BOOST_TEST((chain.find<permission_object, by_owner>(boost::make_tuple(name("alice"), name("spending")))) == nullptr);
+   BOOST_TEST((chain.template find<permission_object, by_owner>(boost::make_tuple(name("alice"), name("spending")))) == nullptr);
    // Delete trading auth, now it should succeed since it doesn't have any children anymore
    chain.delete_authority(name("alice"), name("trading"), { permission_level{name("alice"), name("active")} }, { new_active_priv_key });
-   BOOST_TEST((chain.find<permission_object, by_owner>(boost::make_tuple(name("alice"), name("trading")))) == nullptr);
+   BOOST_TEST((chain.template find<permission_object, by_owner>(boost::make_tuple(name("alice"), name("trading")))) == nullptr);
 
 } FC_LOG_AND_RETHROW() }
 
-BOOST_AUTO_TEST_CASE(update_auth_unknown_private_key) {
-   try {
-      TESTER chain;
+BOOST_AUTO_TEST_CASE_TEMPLATE( update_auth_unknown_private_key, TESTER, validating_testers ) { try {
+      TESTER  chain;
       chain.create_account(name("alice"));
 
       // public key with no corresponding private key
@@ -240,12 +244,12 @@ BOOST_AUTO_TEST_CASE(update_auth_unknown_private_key) {
       fc::crypto::public_key new_owner_pub_key(std::move(shim));
 
       chain.set_authority(name("alice"), name("owner"), authority(new_owner_pub_key), {});
-      chain.produce_blocks();
+      chain.produce_block();
 
       // Ensure the permission is updated
       permission_object::id_type owner_id;
       {
-         auto obj = chain.find<permission_object, by_owner>(boost::make_tuple(name("alice"), name("owner")));
+         auto obj = chain.template find<permission_object, by_owner>(boost::make_tuple(name("alice"), name("owner")));
          BOOST_TEST(obj != nullptr);
          BOOST_TEST(obj->owner == name("alice"));
          BOOST_TEST(obj->name == name("owner"));
@@ -261,7 +265,7 @@ BOOST_AUTO_TEST_CASE(update_auth_unknown_private_key) {
    } FC_LOG_AND_RETHROW()
 }
 
-BOOST_AUTO_TEST_CASE(link_auths) { try {
+BOOST_AUTO_TEST_CASE_TEMPLATE( link_auths, TESTER, validating_testers ) { try {
    TESTER chain;
 
    chain.create_accounts({name("alice"),name("bob")});
@@ -271,8 +275,8 @@ BOOST_AUTO_TEST_CASE(link_auths) { try {
    const auto scud_priv_key = chain.get_private_key(name("alice"), "scud");
    const auto scud_pub_key = scud_priv_key.get_public_key();
 
-   chain.set_authority(name("alice"), name("spending"), spending_pub_key, name("active"));
-   chain.set_authority(name("alice"), name("scud"), scud_pub_key, name("spending"));
+   chain.set_authority(name("alice"), name("spending"), authority{spending_pub_key}, name("active"));
+   chain.set_authority(name("alice"), name("scud"), authority{scud_pub_key}, name("spending"));
 
    // Send req auth action with alice's spending key, it should fail
    BOOST_CHECK_THROW(chain.push_reqauth(name("alice"), { permission_level{"alice"_n, name("spending")} }, { spending_priv_key }), irrelevant_auth_exception);
@@ -304,7 +308,7 @@ BOOST_AUTO_TEST_CASE(link_auths) { try {
 
 } FC_LOG_AND_RETHROW() }
 
-BOOST_AUTO_TEST_CASE(link_then_update_auth) { try {
+BOOST_AUTO_TEST_CASE_TEMPLATE( link_then_update_auth, TESTER, validating_testers ) { try {
    TESTER chain;
 
    chain.create_account(name("alice"));
@@ -314,15 +318,16 @@ BOOST_AUTO_TEST_CASE(link_then_update_auth) { try {
    const auto second_priv_key = chain.get_private_key(name("alice"), "second");
    const auto second_pub_key = second_priv_key.get_public_key();
 
-   chain.set_authority(name("alice"), name("first"), first_pub_key, name("active"));
+   chain.set_authority(name("alice"), name("first"), authority{first_pub_key}, name("active"));
 
    chain.link_authority(name("alice"), name("eosio"), name("first"), name("reqauth"));
    chain.push_reqauth(name("alice"), { permission_level{"alice"_n, name("first")} }, { first_priv_key });
 
-   chain.produce_blocks(13); // Wait at least 6 seconds for first push_reqauth transaction to expire.
+   chain.produce_block();
+   chain.produce_block(fc::seconds(6)); // Wait at least 6 seconds for first push_reqauth transaction to expire.
 
    // Update "first" auth public key
-   chain.set_authority(name("alice"), name("first"), second_pub_key, name("active"));
+   chain.set_authority(name("alice"), name("first"), authority{second_pub_key}, name("active"));
    // Authority updated, using previous "first" auth should fail on linked auth
    BOOST_CHECK_THROW(chain.push_reqauth(name("alice"), { permission_level{"alice"_n, name("first")} }, { first_priv_key }), unsatisfied_authorization);
    // Using updated authority, should succeed
@@ -330,25 +335,24 @@ BOOST_AUTO_TEST_CASE(link_then_update_auth) { try {
 
 } FC_LOG_AND_RETHROW() }
 
-BOOST_AUTO_TEST_CASE(create_account) {
-try {
+BOOST_AUTO_TEST_CASE_TEMPLATE( create_account, TESTER, validating_testers ) { try {
    TESTER chain;
    chain.create_account(name("joe"));
    chain.produce_block();
 
    // Verify account created properly
-   const auto& joe_owner_authority = chain.get<permission_object, by_owner>(boost::make_tuple(name("joe"), name("owner")));
+   const auto& joe_owner_authority = chain.template get<permission_object, by_owner>(boost::make_tuple(name("joe"), name("owner")));
    BOOST_TEST(joe_owner_authority.auth.threshold == 1u);
    BOOST_TEST(joe_owner_authority.auth.accounts.size() == 1u);
    BOOST_TEST(joe_owner_authority.auth.keys.size() == 1u);
-   BOOST_TEST(joe_owner_authority.auth.keys[0].key.to_string() == chain.get_public_key(name("joe"), "owner").to_string());
+   BOOST_TEST(joe_owner_authority.auth.keys[0].key.to_string({}) == chain.get_public_key(name("joe"), "owner").to_string({}));
    BOOST_TEST(joe_owner_authority.auth.keys[0].weight == 1u);
 
-   const auto& joe_active_authority = chain.get<permission_object, by_owner>(boost::make_tuple(name("joe"), name("active")));
+   const auto& joe_active_authority = chain.template get<permission_object, by_owner>(boost::make_tuple(name("joe"), name("active")));
    BOOST_TEST(joe_active_authority.auth.threshold == 1u);
    BOOST_TEST(joe_active_authority.auth.accounts.size() == 1u);
    BOOST_TEST(joe_active_authority.auth.keys.size() == 1u);
-   BOOST_TEST(joe_active_authority.auth.keys[0].key.to_string() == chain.get_public_key(name("joe"), "active").to_string());
+   BOOST_TEST(joe_active_authority.auth.keys[0].key.to_string({}) == chain.get_public_key(name("joe"), "active").to_string({}));
    BOOST_TEST(joe_active_authority.auth.keys[0].weight == 1u);
 
    // Create duplicate name
@@ -369,7 +373,7 @@ try {
 
 } FC_LOG_AND_RETHROW() }
 
-BOOST_AUTO_TEST_CASE( any_auth ) { try {
+BOOST_AUTO_TEST_CASE_TEMPLATE( any_auth, TESTER, validating_testers ) { try {
    TESTER chain;
    chain.create_accounts( {name("alice"), name("bob")} );
    chain.produce_block();
@@ -378,8 +382,8 @@ BOOST_AUTO_TEST_CASE( any_auth ) { try {
    const auto spending_pub_key = spending_priv_key.get_public_key();
    const auto bob_spending_pub_key = spending_priv_key.get_public_key();
 
-   chain.set_authority(name("alice"), name("spending"), spending_pub_key, name("active"));
-   chain.set_authority(name("bob"), name("spending"), bob_spending_pub_key, name("active"));
+   chain.set_authority(name("alice"), name("spending"), authority{spending_pub_key}, name("active"));
+   chain.set_authority(name("bob"), name("spending"), authority{bob_spending_pub_key}, name("active"));
 
    /// this should fail because spending is not active which is default for reqauth
    BOOST_REQUIRE_THROW( chain.push_reqauth(name("alice"), { permission_level{"alice"_n, name("spending")} }, { spending_priv_key }),
@@ -404,7 +408,9 @@ BOOST_AUTO_TEST_CASE( any_auth ) { try {
 
 } FC_LOG_AND_RETHROW() }
 
-BOOST_AUTO_TEST_CASE(no_double_billing) {
+// This test does not apply to Savanna testing for now, as setup_policy::preactivate_feature_and_new_bios
+// does not load up bios contract for setfinalizer
+BOOST_AUTO_TEST_CASE( no_double_billing ) {
 try {
    fc::temp_directory tempdir;
    validating_tester chain( tempdir, true );
@@ -444,9 +450,9 @@ try {
                                 });
 
       chain.set_transaction_headers(trx);
-      trx.sign( chain.get_private_key( acc1, "active" ), chain.control->get_chain_id()  );
-      trx.sign( chain.get_private_key( acc1, "owner" ), chain.control->get_chain_id()  );
-      trx.sign( chain.get_private_key( acc1a, "owner" ), chain.control->get_chain_id()  );
+      trx.sign( chain.get_private_key( acc1, "active" ), chain.get_chain_id()  );
+      trx.sign( chain.get_private_key( acc1, "owner" ), chain.get_chain_id()  );
+      trx.sign( chain.get_private_key( acc1a, "owner" ), chain.get_chain_id()  );
       return chain.push_transaction( trx );
    };
 
@@ -464,7 +470,7 @@ try {
 
 } FC_LOG_AND_RETHROW() }
 
-BOOST_AUTO_TEST_CASE(stricter_auth) {
+BOOST_AUTO_TEST_CASE_TEMPLATE( stricter_auth, TESTER, validating_testers ) {
 try {
    TESTER chain;
 
@@ -496,7 +502,7 @@ try {
                                 });
 
       chain.set_transaction_headers(trx);
-      trx.sign( chain.get_private_key( creator, "active" ), chain.control->get_chain_id()  );
+      trx.sign( chain.get_private_key( creator, "active" ), chain.get_chain_id()  );
       return chain.push_transaction( trx );
    };
 
@@ -514,19 +520,19 @@ try {
 
 } FC_LOG_AND_RETHROW() }
 
-BOOST_AUTO_TEST_CASE( linkauth_special ) { try {
+BOOST_AUTO_TEST_CASE_TEMPLATE( linkauth_special, TESTER, validating_testers ) { try {
    TESTER chain;
 
    const auto& tester_account = "tester"_n;
    std::vector<transaction_id_type> ids;
 
-   chain.produce_blocks();
+   chain.produce_block();
    chain.create_account("currency"_n);
 
-   chain.produce_blocks();
+   chain.produce_block();
    chain.create_account("tester"_n);
    chain.create_account("tester2"_n);
-   chain.produce_blocks();
+   chain.produce_block();
 
    chain.push_action(config::system_account_name, updateauth::get_name(), tester_account, fc::mutable_variant_object()
            ("account", "tester")
@@ -555,5 +561,139 @@ BOOST_AUTO_TEST_CASE( linkauth_special ) { try {
 
 } FC_LOG_AND_RETHROW() }
 
+BOOST_AUTO_TEST_CASE_TEMPLATE( delete_auth, TESTER, validating_testers ) { try {
+   TESTER chain;
+
+   const auto& tester_account = "tester"_n;
+
+   chain.produce_block();
+   chain.create_account("eosio.token"_n);
+   chain.produce_block();
+
+   chain.set_code("eosio.token"_n, test_contracts::eosio_token_wasm());
+   chain.set_abi("eosio.token"_n, test_contracts::eosio_token_abi());
+
+   chain.produce_block();
+   chain.create_account("tester"_n);
+   chain.create_account("tester2"_n);
+   chain.produce_block();
+
+   transaction_trace_ptr trace;
+
+   // can't delete auth because it doesn't exist
+   BOOST_REQUIRE_EXCEPTION(
+   trace = chain.push_action(config::system_account_name, deleteauth::get_name(), tester_account, fc::mutable_variant_object()
+           ("account", "tester")
+           ("permission", "first")),
+   permission_query_exception,
+   [] (const permission_query_exception &e)->bool {
+      expect_assert_message(e, "permission_query_exception: Permission Query Exception\nFailed to retrieve permission");
+      return true;
+   });
+
+   // update auth
+   chain.push_action(config::system_account_name, updateauth::get_name(), tester_account, fc::mutable_variant_object()
+           ("account", "tester")
+           ("permission", "first")
+           ("parent", "active")
+           ("auth",  authority(chain.get_public_key(tester_account, "first")))
+   );
+
+   // link auth
+   chain.push_action(config::system_account_name, linkauth::get_name(), tester_account, fc::mutable_variant_object()
+           ("account", "tester")
+           ("code", "eosio.token")
+           ("type", "transfer")
+           ("requirement", "first"));
+
+   // create CUR token
+   chain.produce_block();
+   chain.push_action("eosio.token"_n, "create"_n, "eosio.token"_n, mutable_variant_object()
+           ("issuer", "eosio.token" )
+           ("maximum_supply", "9000000.0000 CUR" )
+   );
+
+   // issue to account "eosio.token"
+   chain.push_action("eosio.token"_n, name("issue"), "eosio.token"_n, fc::mutable_variant_object()
+           ("to",       "eosio.token")
+           ("quantity", "1000000.0000 CUR")
+           ("memo", "for stuff")
+   );
+
+   // transfer from eosio.token to tester
+   trace = chain.push_action("eosio.token"_n, name("transfer"), "eosio.token"_n, fc::mutable_variant_object()
+       ("from", "eosio.token")
+       ("to", "tester")
+       ("quantity", "100.0000 CUR")
+       ("memo", "hi" )
+   );
+   BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
+
+   chain.produce_block();
+
+   auto liquid_balance = chain.get_currency_balance("eosio.token"_n, symbol(SY(4,CUR)), "eosio.token"_n);
+   BOOST_REQUIRE_EQUAL(asset::from_string("999900.0000 CUR"), liquid_balance);
+   liquid_balance = chain.get_currency_balance("eosio.token"_n, symbol(SY(4,CUR)), "tester"_n);
+   BOOST_REQUIRE_EQUAL(asset::from_string("100.0000 CUR"), liquid_balance);
+
+   trace = chain.push_action("eosio.token"_n, name("transfer"), "tester"_n, fc::mutable_variant_object()
+       ("from", "tester")
+       ("to", "tester2")
+       ("quantity", "1.0000 CUR")
+       ("memo", "hi" )
+   );
+
+   BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
+
+   liquid_balance = chain.get_currency_balance("eosio.token"_n, symbol(SY(4,CUR)), "eosio.token"_n);
+   BOOST_REQUIRE_EQUAL(asset::from_string("999900.0000 CUR"), liquid_balance);
+   liquid_balance = chain.get_currency_balance("eosio.token"_n, symbol(SY(4,CUR)), "tester"_n);
+   BOOST_REQUIRE_EQUAL(asset::from_string("99.0000 CUR"), liquid_balance);
+   liquid_balance = chain.get_currency_balance("eosio.token"_n, symbol(SY(4,CUR)), "tester2"_n);
+   BOOST_REQUIRE_EQUAL(asset::from_string("1.0000 CUR"), liquid_balance);
+
+   // can't delete auth because it's linked
+   BOOST_REQUIRE_EXCEPTION(
+   trace = chain.push_action(config::system_account_name, deleteauth::get_name(), tester_account, fc::mutable_variant_object()
+           ("account", "tester")
+           ("permission", "first")),
+   action_validate_exception,
+   [] (const action_validate_exception &e)->bool {
+      expect_assert_message(e, "action_validate_exception: message validation exception\nCannot delete a linked authority");
+      return true;
+   });
+
+   // unlink auth
+   trace = chain.push_action(config::system_account_name, unlinkauth::get_name(), tester_account, fc::mutable_variant_object()
+           ("account", "tester")
+           ("code", "eosio.token")
+           ("type", "transfer"));
+   BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
+
+   // delete auth
+   trace = chain.push_action(config::system_account_name, deleteauth::get_name(), tester_account, fc::mutable_variant_object()
+           ("account", "tester")
+           ("permission", "first"));
+
+   BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
+
+   chain.produce_block();;
+
+   trace = chain.push_action("eosio.token"_n, name("transfer"), "tester"_n, fc::mutable_variant_object()
+       ("from", "tester")
+       ("to", "tester2")
+       ("quantity", "3.0000 CUR")
+       ("memo", "hi" )
+   );
+   BOOST_REQUIRE_EQUAL(transaction_receipt::executed, trace->receipt->status);
+
+   chain.produce_block();
+
+   liquid_balance = chain.get_currency_balance("eosio.token"_n, symbol(SY(4,CUR)), "tester"_n);
+   BOOST_REQUIRE_EQUAL(asset::from_string("96.0000 CUR"), liquid_balance);
+   liquid_balance = chain.get_currency_balance("eosio.token"_n, symbol(SY(4,CUR)), "tester2"_n);
+   BOOST_REQUIRE_EQUAL(asset::from_string("4.0000 CUR"), liquid_balance);
+
+} FC_LOG_AND_RETHROW() }/// delete_auth
 
 BOOST_AUTO_TEST_SUITE_END()

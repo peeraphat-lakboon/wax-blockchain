@@ -7,7 +7,7 @@
 #include <eosio/chain/abi_def.hpp>
 #include <eosio/chain/asset.hpp>
 #include <eosio/chain/block.hpp>
-#include <eosio/chain/block_state.hpp>
+#include <eosio/chain/block_state_legacy.hpp>
 #include <eosio/chain/name.hpp>
 #include <eosio/chain/types.hpp>
 
@@ -20,28 +20,28 @@ namespace eosio::trace_api {
     */
 
    namespace test_common {
-      fc::sha256 operator"" _h(const char* input, std::size_t) {
+      inline fc::sha256 operator"" _h(const char* input, std::size_t) {
          return fc::sha256(input);
       }
 
-      chain::name operator"" _n(const char* input, std::size_t) {
+      inline chain::name operator"" _n(const char* input, std::size_t) {
          return chain::name(input);
       }
 
-      chain::asset operator"" _t(const char* input, std::size_t) {
+      inline chain::asset operator"" _t(const char* input, std::size_t) {
          return chain::asset::from_string(input);
       }
 
-      auto get_private_key( chain::name keyname, std::string role = "owner" ) {
+      inline auto get_private_key( chain::name keyname, std::string role = "owner" ) {
          auto secret = fc::sha256::hash( keyname.to_string() + role );
          return chain::private_key_type::regenerate<fc::ecc::private_key_shim>( secret );
       }
 
-      auto get_public_key( chain::name keyname, std::string role = "owner" ) {
+      inline auto get_public_key( chain::name keyname, std::string role = "owner" ) {
          return get_private_key( keyname, role ).get_public_key();
       }
 
-      chain::bytes make_transfer_data( chain::name from, chain::name to, chain::asset quantity, std::string&& memo) {
+      inline chain::bytes make_transfer_data( chain::name from, chain::name to, chain::asset quantity, std::string&& memo) {
          fc::datastream<size_t> ps;
          fc::raw::pack(ps, from, to, quantity, memo);
          chain::bytes result( ps.tellp());
@@ -53,9 +53,9 @@ namespace eosio::trace_api {
          return result;
       }
 
-      auto make_block_state( chain::block_id_type previous, uint32_t height, uint32_t slot, chain::name producer,
-                             std::vector<chain::packed_transaction> trxs ) {
-         chain::signed_block_ptr block = std::make_shared<chain::signed_block>();
+      inline auto make_block( chain::block_id_type previous, uint32_t height, uint32_t slot, chain::name producer,
+                              std::vector<chain::packed_transaction> trxs ) {
+         auto block = std::make_shared<chain::signed_block>();
          for( auto& trx : trxs ) {
             block->transactions.emplace_back( trx );
          }
@@ -71,43 +71,14 @@ namespace eosio::trace_api {
          auto priv_key = get_private_key( block->producer, "active" );
          auto pub_key = get_public_key( block->producer, "active" );
 
-         auto prev = std::make_shared<chain::block_state>();
-         auto header_bmroot = chain::digest_type::hash( std::make_pair( block->digest(), prev->blockroot_merkle.get_root()));
-         auto sig_digest = chain::digest_type::hash( std::make_pair( header_bmroot, prev->pending_schedule.schedule_hash ));
+         auto header_bmroot = chain::digest_type::hash( std::make_pair( block->digest(), chain::digest_type{}));
+         auto sig_digest = chain::digest_type::hash( std::make_pair( header_bmroot, chain::digest_type{} ));
          block->producer_signature = priv_key.sign( sig_digest );
 
-         std::vector<chain::private_key_type> signing_keys;
-         signing_keys.emplace_back( std::move( priv_key ));
-         auto signer = [&]( chain::digest_type d ) {
-            std::vector<chain::signature_type> result;
-            result.reserve( signing_keys.size());
-            for( const auto& k: signing_keys )
-               result.emplace_back( k.sign( d ));
-            return result;
-         };
-         chain::pending_block_header_state pbhs;
-         pbhs.producer = block->producer;
-         pbhs.timestamp = block->timestamp;
-         chain::producer_authority_schedule schedule = {0, {chain::producer_authority{block->producer,
-                                                                                      chain::block_signing_authority_v0{1, {{pub_key, 1}}}}}};
-         pbhs.active_schedule = schedule;
-         pbhs.valid_block_signing_authority = chain::block_signing_authority_v0{1, {{pub_key, 1}}};
-         auto bsp = std::make_shared<chain::block_state>(
-            std::move( pbhs ),
-            std::move( block ),
-            eosio::chain::deque<chain::transaction_metadata_ptr>(),
-            chain::protocol_feature_set(),
-            []( chain::block_timestamp_type timestamp,
-                const fc::flat_set<chain::digest_type>& cur_features,
-                const std::vector<chain::digest_type>& new_features ) {},
-            signer
-         );
-         bsp->block_num = height;
-
-         return bsp;
+         return block;
       }
 
-      void to_kv_helper(const fc::variant& v, std::function<void(const std::string&, const std::string&)>&& append){
+      inline void to_kv_helper(const fc::variant& v, std::function<void(const std::string&, const std::string&)>&& append){
          if (v.is_object() ) {
             const auto& obj = v.get_object();
             static const std::string sep = ".";
@@ -130,7 +101,7 @@ namespace eosio::trace_api {
          }
       }
 
-      auto to_kv(const fc::variant& v) {
+      inline auto to_kv(const fc::variant& v) {
          std::map<std::string, std::string> result;
          to_kv_helper(v, [&result](const std::string& k, const std::string& v){
             result.emplace(k, v);
@@ -143,13 +114,13 @@ namespace eosio::trace_api {
    // I prefer not to have these operators but they are convenient for BOOST TEST integration
    //
 
-   bool operator==(const authorization_trace_v0& lhs, const authorization_trace_v0& rhs) {
+   inline bool operator==(const authorization_trace_v0& lhs, const authorization_trace_v0& rhs) {
       return
          lhs.account == rhs.account &&
          lhs.permission == rhs.permission;
    }
 
-   bool operator==(const action_trace_v0& lhs, const action_trace_v0& rhs) {
+   inline bool operator==(const action_trace_v0& lhs, const action_trace_v0& rhs) {
       return
          lhs.global_sequence == rhs.global_sequence &&
          lhs.receiver == rhs.receiver &&
@@ -159,13 +130,13 @@ namespace eosio::trace_api {
          lhs.data == rhs.data;
    }
 
-   bool operator==(const transaction_trace_v0& lhs,  const transaction_trace_v0& rhs) {
+   inline bool operator==(const transaction_trace_v0& lhs,  const transaction_trace_v0& rhs) {
       return
          lhs.id == rhs.id &&
          lhs.actions == rhs.actions;
    }
 
-   bool operator==(const transaction_trace_v2& lhs,  const transaction_trace_v2& rhs) {
+   inline bool operator==(const transaction_trace_v2& lhs,  const transaction_trace_v2& rhs) {
       return
          lhs.id == rhs.id &&
          lhs.actions == rhs.actions &&
@@ -181,7 +152,7 @@ namespace eosio::trace_api {
          lhs.trx_header.delay_sec == rhs.trx_header.delay_sec ;
    }
 
-   bool operator==(const block_trace_v0 &lhs, const block_trace_v0 &rhs) {
+   inline bool operator==(const block_trace_v0 &lhs, const block_trace_v0 &rhs) {
       return
          lhs.id == rhs.id &&
          lhs.number == rhs.number &&
@@ -191,7 +162,7 @@ namespace eosio::trace_api {
          lhs.transactions == rhs.transactions;
    }
 
-   bool operator==(const block_trace_v2 &lhs, const block_trace_v2 &rhs) {
+   inline bool operator==(const block_trace_v2 &lhs, const block_trace_v2 &rhs) {
       return
          lhs.id == rhs.id &&
          lhs.number == rhs.number &&
@@ -204,42 +175,42 @@ namespace eosio::trace_api {
          lhs.transactions == rhs.transactions;
    }
 
-   std::ostream& operator<<(std::ostream &os, const block_trace_v0 &bt) {
+   inline std::ostream& operator<<(std::ostream &os, const block_trace_v0 &bt) {
       os << fc::json::to_string( bt, fc::time_point::maximum() );
       return os;
    }
 
-   std::ostream& operator<<(std::ostream &os, const block_trace_v2 &bt) {
+   inline std::ostream& operator<<(std::ostream &os, const block_trace_v2 &bt) {
       os << fc::json::to_string( bt, fc::time_point::maximum() );
       return os;
    }
 
-   bool operator==(const block_entry_v0& lhs, const block_entry_v0& rhs) {
+   inline bool operator==(const block_entry_v0& lhs, const block_entry_v0& rhs) {
       return
          lhs.id == rhs.id &&
          lhs.number == rhs.number &&
          lhs.offset == rhs.offset;
    }
 
-   bool operator!=(const block_entry_v0& lhs, const block_entry_v0& rhs) {
+   inline bool operator!=(const block_entry_v0& lhs, const block_entry_v0& rhs) {
       return !(lhs == rhs);
    }
 
-   bool operator==(const lib_entry_v0& lhs, const lib_entry_v0& rhs) {
+   inline bool operator==(const lib_entry_v0& lhs, const lib_entry_v0& rhs) {
       return
          lhs.lib == rhs.lib;
    }
 
-   bool operator!=(const lib_entry_v0& lhs, const lib_entry_v0& rhs) {
+   inline bool operator!=(const lib_entry_v0& lhs, const lib_entry_v0& rhs) {
       return !(lhs == rhs);
    }
 
-   std::ostream& operator<<(std::ostream& os, const block_entry_v0& be) {
+   inline std::ostream& operator<<(std::ostream& os, const block_entry_v0& be) {
       os << fc::json::to_string(be, fc::time_point::maximum());
       return os;
    }
 
-   std::ostream& operator<<(std::ostream& os, const lib_entry_v0& le) {
+   inline std::ostream& operator<<(std::ostream& os, const lib_entry_v0& le) {
       os << fc::json::to_string(le, fc::time_point::maximum());
       return os;
    }
@@ -252,7 +223,7 @@ namespace fc {
       return os;
    }
 
-   std::ostream& operator<<(std::ostream &os, const fc::microseconds& t ) {
+   inline std::ostream& operator<<(std::ostream &os, const fc::microseconds& t ) {
       os << t.count();
       return os;
    }
@@ -260,15 +231,15 @@ namespace fc {
 }
 
 namespace eosio::chain {
-   bool operator==(const abi_def& lhs, const abi_def& rhs) {
+   inline bool operator==(const abi_def& lhs, const abi_def& rhs) {
       return fc::raw::pack(lhs) == fc::raw::pack(rhs);
    }
 
-   bool operator!=(const abi_def& lhs, const abi_def& rhs) {
+   inline bool operator!=(const abi_def& lhs, const abi_def& rhs) {
       return !(lhs == rhs);
    }
 
-   std::ostream& operator<<(std::ostream& os, const abi_def& abi) {
+   inline std::ostream& operator<<(std::ostream& os, const abi_def& abi) {
       os << fc::json::to_string(abi, fc::time_point::maximum());
       return os;
    }
@@ -278,7 +249,7 @@ namespace std {
    /*
     * operator for printing to_kv entries
     */
-   ostream& operator<<(ostream& os, const pair<string, string>& entry) {
+   inline ostream& operator<<(ostream& os, const pair<string, string>& entry) {
       os << entry.first + "=" + entry.second;
       return os;
    }

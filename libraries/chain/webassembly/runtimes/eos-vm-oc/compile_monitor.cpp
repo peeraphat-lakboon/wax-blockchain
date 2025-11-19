@@ -71,7 +71,7 @@ struct compile_monitor_session {
                   connection_dead_signal();
                   return;
                }
-               kick_compile_off(compile.code, std::move(fds[0]));
+               kick_compile_off(compile, std::move(fds[0]));
             },
             [&](const evict_wasms_message& evict) {
                for(const code_descriptor& cd : evict.codes) {
@@ -90,35 +90,39 @@ struct compile_monitor_session {
       });
    }
 
-   void kick_compile_off(const code_tuple& code_id, wrapped_fd&& wasm_code) {
+   void kick_compile_off(const compile_wasm_message& msg, wrapped_fd&& wasm_code) {
       //prepare a requst to go out to the trampoline
       int socks[2];
       socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, socks);
       local::datagram_protocol::socket response_socket(_ctx);
       response_socket.assign(local::datagram_protocol(), socks[0]);
-      std::vector<wrapped_fd> fds_pass_to_trampoline;
-      fds_pass_to_trampoline.emplace_back(socks[1]);
-      fds_pass_to_trampoline.emplace_back(std::move(wasm_code));
+      std::array<wrapped_fd, 2> fds_pass_to_trampoline { socks[1], std::move(wasm_code) };
 
-      eosvmoc_message trampoline_compile_request = compile_wasm_message{code_id};
+      eosvmoc_message trampoline_compile_request = msg;
       if(write_message_with_fds(_trampoline_socket, trampoline_compile_request, fds_pass_to_trampoline) == false) {
-         wasm_compilation_result_message reply{code_id, compilation_result_unknownfailure{}, _allocator->get_free_memory()};
+         wasm_compilation_result_message reply{msg.code, compilation_result_unknownfailure{}, _allocator->get_free_memory(), msg.queued_time};
          write_message_with_fds(_nodeos_instance_socket, reply);
          return;
       }
 
-      current_compiles.emplace_front(code_id, std::move(response_socket));
+      current_compiles.emplace_front(msg.code.code_id, std::move(response_socket));
       read_message_from_compile_task(current_compiles.begin());
    }
 
    void read_message_from_compile_task(std::list<std::tuple<code_tuple, local::datagram_protocol::socket>>::iterator current_compile_it) {
       auto& [code, socket] = *current_compile_it;
       socket.async_wait(local::datagram_protocol::socket::wait_read, [this, current_compile_it](auto ec) {
-         //at this point we only expect 1 of 2 things to happen: we either get a reply (success), or we get no reply (failure)
+         //at this point we generally expect 1 of 2 things to happen: we either get a reply (success), or we get an error reading from the
+         // socket (failure). But there is also a third possibility that this compile_monitor_session is being destroyed and thus the
+         // socket is being destroyed by way of current_compiles being destroyed. Since this is an async_wait() and not an async_read(),
+         // for now just consider any error as being due to cancellation at dtor time and completely bail out (there aren't many other
+         // potential errors for an asnyc_wait)
+         if(ec)
+            return;
          auto& [code, socket] = *current_compile_it;
          auto [success, message, fds] = read_message_with_fds(socket);
-         
-         wasm_compilation_result_message reply{code, compilation_result_unknownfailure{}, _allocator->get_free_memory()};
+
+         wasm_compilation_result_message reply{code, compilation_result_unknownfailure{}, _allocator->get_free_memory(), fc::time_point{}};
          
          void* code_ptr = nullptr;
          void* mem_ptr = nullptr;
@@ -137,6 +141,7 @@ struct compile_monitor_session {
                   copy_memfd_contents_to_pointer(code_ptr, fds[0]);
                   copy_memfd_contents_to_pointer(mem_ptr, fds[1]);
 
+                  reply.queued_time = result.queued_time;
                   reply.result = code_descriptor {
                      code.code_id,
                      code.vm_version,
@@ -317,9 +322,7 @@ wrapped_fd get_connection_to_compile_monitor(int cache_fd) {
    FC_ASSERT(dup_of_cache_fd != -1, "failed to dup cache_fd");
    wrapped_fd dup_cache_fd(dup_of_cache_fd);
 
-   std::vector<wrapped_fd> fds_to_pass; 
-   fds_to_pass.emplace_back(std::move(socket_to_hand_to_monitor_session));
-   fds_to_pass.emplace_back(std::move(dup_cache_fd));
+   std::array<wrapped_fd, 2> fds_to_pass { std::move(socket_to_hand_to_monitor_session), std::move(dup_cache_fd) };
    write_message_with_fds(the_compile_monitor_trampoline.compile_manager_fd, initialize_message(), fds_to_pass);
 
    auto [success, message, fds] = read_message_with_fds(the_compile_monitor_trampoline.compile_manager_fd);

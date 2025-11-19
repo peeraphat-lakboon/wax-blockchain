@@ -8,4 +8,10 @@ public:
 
    [[eosio::action]]
    void doit();
+
+   [[eosio::action]]
+   void doitslow();
+
+   [[eosio::action]]
+   void doitforever();
 };

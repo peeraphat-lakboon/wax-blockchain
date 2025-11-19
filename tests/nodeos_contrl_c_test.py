@@ -3,7 +3,7 @@
 import signal
 import time
 
-from TestHarness import Cluster, Node, TestHelper, Utils, WalletMgr, CORE_SYMBOL
+from TestHarness import Cluster, Node, TestHelper, Utils, WalletMgr, CORE_SYMBOL, createAccountKeys
 
 ###############################################################
 # nodeos_contrl_c_lr_test
@@ -18,15 +18,15 @@ from TestHarness import Cluster, Node, TestHelper, Utils, WalletMgr, CORE_SYMBOL
 Print = Utils.Print
 errorExit=Utils.errorExit
 
-args = TestHelper.parse_args({"--wallet-port", "-v","--unshared"})
+args = TestHelper.parse_args({"--wallet-port","--activate-if","-v","--unshared"})
 
-cluster=Cluster(walletd=True,unshared=args.unshared)
-killAll=True
+cluster=Cluster(unshared=args.unshared)
 totalProducerNodes=2
 totalNonProducerNodes=1
 totalNodes=totalProducerNodes+totalNonProducerNodes
 maxActiveProducers=2
 totalProducers=maxActiveProducers
+activateIF=args.activate_if
 walletPort=args.wallet_port
 walletMgr=WalletMgr(True, port=walletPort)
 producerEndpoint = '127.0.0.1:8888'
@@ -38,8 +38,6 @@ trxGenLauncher=None
 try:
     TestHelper.printSystemInfo("BEGIN")
     cluster.setWalletMgr(walletMgr)
-    cluster.killall(allInstances=killAll)
-    cluster.cleanup()
 
     specificExtraNodeosArgs = {}
     # producer nodes will be mapped to 0 through totalProducerNodes-1, so the number totalProducerNodes will be the non-producing node
@@ -54,6 +52,7 @@ try:
 
     if cluster.launch(prodCount=1, topo="bridge", pnodes=totalProducerNodes,
                       totalNodes=totalNodes, totalProducers=totalProducers,
+                      activateIF=activateIF,
                       specificExtraNodeosArgs=specificExtraNodeosArgs,
                       extraNodeosArgs=extraNodeosArgs) is False:
         Utils.cmdError("launcher")
@@ -62,9 +61,9 @@ try:
     cluster.validateAccounts(None)
 
     prodNode = cluster.getNode(0)
-    nonProdNode = cluster.getNode(1)
+    nonProdNode = cluster.getNode(2)
 
-    accounts=cluster.createAccountKeys(2)
+    accounts=createAccountKeys(2)
     if accounts is None:
         Utils.errorExit("FAILURE - create keys")
 
@@ -111,11 +110,11 @@ try:
     testSuccessful = nonProdNode.kill(signal.SIGTERM)
 
     if not testSuccessful:
-        TestHelper.shutdown(cluster, walletMgr, testSuccessful=testSuccessful, killEosInstances=True, killWallet=True, keepLogs=True, cleanRun=True, dumpErrorDetails=True)
+        TestHelper.shutdown(cluster, walletMgr, testSuccessful=testSuccessful, dumpErrorDetails=True)
         errorExit("Failed to kill the seed node")
 
 finally:
-    TestHelper.shutdown(cluster, walletMgr, testSuccessful=testSuccessful, killEosInstances=True, killWallet=True, keepLogs=False, cleanRun=True, dumpErrorDetails=True)
+    TestHelper.shutdown(cluster, walletMgr, testSuccessful=testSuccessful, dumpErrorDetails=True)
 
 errorCode = 0 if testSuccessful else 1
 exit(errorCode)

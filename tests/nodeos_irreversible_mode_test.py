@@ -24,20 +24,16 @@ numOfProducers = 4
 totalNodes = 20
 
 # Parse command line arguments
-args = TestHelper.parse_args({"-v","--clean-run","--dump-error-details","--leave-running","--keep-logs","--unshared"})
+args = TestHelper.parse_args({"-v","--activate-if","--dump-error-details","--leave-running","--keep-logs","--unshared"})
 Utils.Debug = args.v
-killAll=args.clean_run
+activateIF=args.activate_if
 dumpErrorDetails=args.dump_error_details
-dontKill=args.leave_running
-killEosInstances=not dontKill
-killWallet=not dontKill
-keepLogs=args.keep_logs
 speculativeReadMode="head"
 blockLogRetainBlocks="10000"
 
 # Setup cluster and it's wallet manager
 walletMgr=WalletMgr(True)
-cluster=Cluster(walletd=True,unshared=args.unshared)
+cluster=Cluster(unshared=args.unshared, keepRunning=args.leave_running, keepLogs=args.keep_logs)
 cluster.setWalletMgr(walletMgr)
 
 def backupBlksDir(nodeId):
@@ -54,23 +50,10 @@ def recoverBackedupBlksDir(nodeId):
    shutil.rmtree(existingBlocksDir, ignore_errors=True)
    shutil.copytree(backedupBlocksDir, existingBlocksDir)
 
-def getLatestSnapshot(nodeId):
-   snapshotDir = os.path.join(Utils.getNodeDataDir(nodeId), "snapshots")
-   snapshotDirContents = os.listdir(snapshotDir)
-   assert len(snapshotDirContents) > 0
-   snapshotDirContents.sort()
-   return os.path.join(snapshotDir, snapshotDirContents[-1])
-
-
 def removeReversibleBlks(nodeId):
    dataDir = Utils.getNodeDataDir(nodeId)
    reversibleBlks = os.path.join(dataDir, "blocks", "reversible")
    shutil.rmtree(reversibleBlks, ignore_errors=True)
-
-def removeState(nodeId):
-   dataDir = Utils.getNodeDataDir(nodeId)
-   state = os.path.join(dataDir, "state")
-   shutil.rmtree(state, ignore_errors=True)
 
 def getHeadLibAndForkDbHead(node: Node):
    info = node.getInfo()
@@ -135,14 +118,17 @@ def confirmLibOfIrrMode(nodeToTest, headLibAndForkDbHeadBeforeSwitchMode=None):
 
 # Confirm the head lib and fork db of speculative mode
 # Under any condition of speculative mode:
-# - forkDbHead == head >= lib
+#  - forkDbHead >= head >= lib
+# For a stable network with no forks and all nodes in-sync, the fork db can have one non-processed block received from
+# the network but not yet applied to chain head.
+#  - forDbHead == (head || head+1) >= lib
 # headLibAndForkDbHeadBeforeSwitchMode should be only passed IF production is disabled, otherwise it provides erroneous check
-# When comparing with the the state before node is switched:
+# When comparing with the state before node is switched:
 # - head == forkDbHeadBeforeSwitchMode == forkDbHead and lib == headBeforeSwitchMode == libBeforeSwitchMode
 def confirmHeadLibAndForkDbHeadOfSpecMode(nodeToTest, headLibAndForkDbHeadBeforeSwitchMode=None):
    head, lib, forkDbHead = getHeadLibAndForkDbHead(nodeToTest)
    assert head >= lib, "Head should be larger or equal to lib (head: {}, lib: {})".format(head, lib)
-   assert head == forkDbHead, "Head ({}) should be equal to fork db head ({})".format(head, forkDbHead)
+   assert (forkDbHead == head) or (forkDbHead == head+1), "Head ({}) should be equal to fork db head or one behind ({})".format(head, forkDbHead)
 
    if headLibAndForkDbHeadBeforeSwitchMode:
       headBeforeSwitchMode, libBeforeSwitchMode, forkDbHeadBeforeSwitchMode = headLibAndForkDbHeadBeforeSwitchMode
@@ -153,7 +139,7 @@ def confirmHeadLibAndForkDbHeadOfSpecMode(nodeToTest, headLibAndForkDbHeadBefore
          "Fork db head ({}) should be equal to fork db head before switch mode ({}) ".format(forkDbHead, forkDbHeadBeforeSwitchMode)
 
 def relaunchNode(node: Node, chainArg="", addSwapFlags=None, relaunchAssertMessage="Fail to relaunch"):
-   isRelaunchSuccess = node.relaunch(chainArg=chainArg, addSwapFlags=addSwapFlags, timeout=relaunchTimeout, cachePopen=True)
+   isRelaunchSuccess = node.relaunch(chainArg=chainArg, addSwapFlags=addSwapFlags, timeout=relaunchTimeout)
    time.sleep(1) # Give a second to replay or resync if needed
    assert isRelaunchSuccess, relaunchAssertMessage
    return isRelaunchSuccess
@@ -164,13 +150,13 @@ testSuccessful = False
 try:
    # Kill any existing instances and launch cluster
    TestHelper.printSystemInfo("BEGIN")
-   cluster.killall(allInstances=killAll)
-   cluster.cleanup()
    cluster.launch(
       prodCount=numOfProducers,
       totalProducers=numOfProducers,
       totalNodes=totalNodes,
       pnodes=1,
+      activateIF=activateIF,
+      biosFinalizer=False,
       topo="mesh",
       specificExtraNodeosArgs={
          0:"--enable-stale-production",
@@ -379,9 +365,9 @@ try:
          nodeToTest.kill(signal.SIGTERM)
 
          # Start from clean data dir, recover back up blocks, and then relaunch with irreversible snapshot
-         removeState(nodeIdOfNodeToTest)
+         nodeToTest.removeState()
          recoverBackedupBlksDir(nodeIdOfNodeToTest) # this function will delete the existing blocks dir first
-         relaunchNode(nodeToTest, chainArg=" --snapshot {}".format(getLatestSnapshot(nodeIdOfNodeToTest)), addSwapFlags={"--read-mode": speculativeReadMode})
+         relaunchNode(nodeToTest, chainArg=" --snapshot {}".format(nodeToTest.getLatestSnapshot()), addSwapFlags={"--read-mode": speculativeReadMode})
          confirmHeadLibAndForkDbHeadOfSpecMode(nodeToTest)
          # Ensure it automatically replays "reversible blocks", i.e. head lib and fork db should be the same
          headLibAndForkDbHeadAfterRelaunch = getHeadLibAndForkDbHead(nodeToTest)
@@ -399,7 +385,7 @@ try:
 
          # Relaunch the node again (using the same snapshot)
          # This time ensure it automatically replays both "irreversible blocks" and "reversible blocks", i.e. the end result should be the same as before shutdown
-         removeState(nodeIdOfNodeToTest)
+         nodeToTest.removeState()
          relaunchNode(nodeToTest)
          headLibAndForkDbHeadAfterRelaunch = getHeadLibAndForkDbHead(nodeToTest)
          assert headLibAndForkDbHeadBeforeShutdown == headLibAndForkDbHeadAfterRelaunch, \
@@ -407,7 +393,7 @@ try:
       finally:
          stopProdNode()
 
-   # 10th test case: Load an irreversible snapshot into a node running without a block log
+   # 10th test case: Load an irreversible snapshot into a node running without a block log nor fork_db
    # Expectation: Node launches successfully
    #              and the head and lib should be advancing after some blocks produced
    def switchToNoBlockLogWithIrrModeSnapshot(nodeIdOfNodeToTest, nodeToTest):
@@ -422,11 +408,13 @@ try:
          nodeToTest.createSnapshot()
          nodeToTest.kill(signal.SIGTERM)
 
-         # Start from clean data dir and then relaunch with irreversible snapshot, no block log means that fork_db will be reset
-         removeState(nodeIdOfNodeToTest)
-         relaunchNode(nodeToTest, chainArg=" --snapshot {}".format(getLatestSnapshot(nodeIdOfNodeToTest)), addSwapFlags={"--read-mode": speculativeReadMode, "--block-log-retain-blocks":"0"})
+         # Start from clean data dir, no block log nor fork_db, and then relaunch with irreversible snapshot
+         nodeToTest.removeState()
+         nodeToTest.removeReversibleBlks()
+         relaunchNode(nodeToTest, chainArg=" --snapshot {}".format(nodeToTest.getLatestSnapshot()), addSwapFlags={"--read-mode": speculativeReadMode, "--block-log-retain-blocks":"0"})
          confirmHeadLibAndForkDbHeadOfSpecMode(nodeToTest)
-         # Ensure it does not replay "reversible blocks", i.e. head and lib should be different
+         # headLibAndForkDbHeadBeforeShutdown is for speculative mode node.
+         # Since restarting from snapshot the head will be reverted back to LIB.
          headLibAndForkDbHeadAfterRelaunch = getHeadLibAndForkDbHead(nodeToTest)
          assert headLibAndForkDbHeadBeforeShutdown != headLibAndForkDbHeadAfterRelaunch, \
             "1: Head, Lib, and Fork Db same after relaunch {} vs {}".format(headLibAndForkDbHeadBeforeShutdown, headLibAndForkDbHeadAfterRelaunch)
@@ -442,7 +430,8 @@ try:
 
          # Relaunch the node again (using the same snapshot)
          # The end result should be the same as before shutdown
-         removeState(nodeIdOfNodeToTest)
+         nodeToTest.removeState()
+         nodeToTest.removeReversibleBlks()
          relaunchNode(nodeToTest)
          headLibAndForkDbHeadAfterRelaunch2 = getHeadLibAndForkDbHead(nodeToTest)
          assert headLibAndForkDbHeadAfterRelaunch == headLibAndForkDbHeadAfterRelaunch2, \
@@ -480,7 +469,7 @@ try:
    testSuccessful = testSuccessful and executeTest(19, switchToNoBlockLogWithIrrModeSnapshot)
 
 finally:
-   TestHelper.shutdown(cluster, walletMgr, testSuccessful, killEosInstances, killWallet, keepLogs, killAll, dumpErrorDetails)
+   TestHelper.shutdown(cluster, walletMgr, testSuccessful, dumpErrorDetails)
    # Print test result
    for msg in testResultMsgs:
       Print(msg)

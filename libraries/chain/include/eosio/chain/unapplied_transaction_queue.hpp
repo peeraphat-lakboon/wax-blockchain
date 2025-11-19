@@ -2,18 +2,11 @@
 
 #include <eosio/chain/transaction_metadata.hpp>
 #include <eosio/chain/trace.hpp>
-#include <eosio/chain/block_state.hpp>
 #include <eosio/chain/exceptions.hpp>
 
 #include <boost/multi_index_container.hpp>
 #include <boost/multi_index/hashed_index.hpp>
 #include <boost/multi_index/member.hpp>
-
-namespace fc {
-  inline std::size_t hash_value( const fc::sha256& v ) {
-     return v._hash[3];
-  }
-}
 
 namespace eosio { namespace chain {
 
@@ -27,7 +20,7 @@ enum class trx_enum_type {
    incoming_p2p = 4 // incoming_end() needs to be updated if this changes
 };
 
-using next_func_t = std::function<void(const std::variant<fc::exception_ptr, transaction_trace_ptr>&)>;
+using next_func_t = next_function<transaction_trace_ptr>;
 
 struct unapplied_transaction {
    const transaction_metadata_ptr trx_meta;
@@ -37,11 +30,6 @@ struct unapplied_transaction {
 
    const transaction_id_type& id()const { return trx_meta->id(); }
    fc::time_point_sec expiration()const { return trx_meta->packed_trx()->expiration(); }
-
-   unapplied_transaction(const unapplied_transaction&) = delete;
-   unapplied_transaction() = delete;
-   unapplied_transaction& operator=(const unapplied_transaction&) = delete;
-   unapplied_transaction(unapplied_transaction&&) = default;
 };
 
 /**
@@ -99,7 +87,7 @@ public:
       auto& persisted_by_expiry = queue.get<by_expiry>();
       while( !persisted_by_expiry.empty() ) {
          const auto& itr = persisted_by_expiry.begin();
-         if( itr->expiration() > pending_block_time ) {
+         if( itr->expiration().to_time_point() > pending_block_time ) {
             break;
          }
          if( yield() ) {
@@ -119,10 +107,10 @@ public:
       return true;
    }
 
-   void clear_applied( const block_state_ptr& bs ) {
+   void clear_applied( const signed_block_ptr& block ) {
       if( empty() ) return;
       auto& idx = queue.get<by_trx_id>();
-      for( const auto& receipt : bs->block->transactions ) {
+      for( const auto& receipt : block->transactions ) {
          if( std::holds_alternative<packed_transaction>(receipt.trx) ) {
             const auto& pt = std::get<packed_transaction>(receipt.trx);
             auto itr = idx.find( pt.id() );
@@ -138,16 +126,9 @@ public:
       }
    }
 
-   void add_forked( const branch_type& forked_branch ) {
-      // forked_branch is in reverse order
-      for( auto ritr = forked_branch.rbegin(), rend = forked_branch.rend(); ritr != rend; ++ritr ) {
-         const block_state_ptr& bsptr = *ritr;
-         for( auto itr = bsptr->trxs_metas().begin(), end = bsptr->trxs_metas().end(); itr != end; ++itr ) {
-            const auto& trx = *itr;
-            auto insert_itr = queue.insert( { trx, trx_enum_type::forked } );
-            if( insert_itr.second ) added( insert_itr.first );
-         }
-      }
+   void add_forked( const transaction_metadata_ptr& trx ) {
+      auto insert_itr = queue.insert( { trx, trx_enum_type::forked } );
+      if( insert_itr.second ) added( insert_itr.first );
    }
 
    void add_aborted( deque<transaction_metadata_ptr> aborted_trxs ) {

@@ -1,7 +1,7 @@
-#include <eosio/chain_plugin/chain_plugin.hpp>
 #include <trx_provider.hpp>
 #include <trx_generator.hpp>
 #include <boost/algorithm/string.hpp>
+#include <boost/program_options.hpp>
 #include <fc/bitutil.hpp>
 #include <fc/io/raw.hpp>
 #include <iostream>
@@ -28,7 +28,7 @@ int main(int argc, char** argv) {
    et::accounts_config accts_config;
    et::trx_tps_tester_config tester_config;
 
-   const int64_t trx_expiration_max = 3600;
+   const int64_t trx_expiration_max = 3599;
    const uint16_t generator_id_max = 960;
    bpo::variables_map vmap;
    bpo::options_description cli("Transaction Generator command line options.");
@@ -50,7 +50,7 @@ int main(int argc, char** argv) {
          ("contract-owner-account", bpo::value<std::string>(&contract_owner_account_in), "Account name of the contract account for the transaction actions")
          ("accounts", bpo::value<std::string>(&accts), "comma-separated list of accounts that will be used for transfers. Minimum required accounts: 2.")
          ("priv-keys", bpo::value<std::string>(&p_keys), "comma-separated list of private keys in same order of accounts list that will be used to sign transactions. Minimum required: 2.")
-         ("trx-expiration", bpo::value<int64_t>(&trx_expr)->default_value(3600), "transaction expiration time in seconds. Defaults to 3,600. Maximum allowed: 3,600")
+         ("trx-expiration", bpo::value<int64_t>(&trx_expr)->default_value(1800), "transaction expiration time in seconds. Defaults to 1,800. Maximum allowed: 3,599")
          ("trx-gen-duration", bpo::value<uint32_t>(&tester_config._gen_duration_seconds)->default_value(60), "Transaction generation duration (seconds). Defaults to 60 seconds.")
          ("target-tps", bpo::value<uint32_t>(&tester_config._target_tps)->default_value(1), "Target transactions per second to generate/send. Defaults to 1 transaction per second.")
          ("last-irreversible-block-id", bpo::value<std::string>(&lib_id_str), "Current last-irreversible-block-id (LIB ID) to use for transactions.")
@@ -62,6 +62,8 @@ int main(int argc, char** argv) {
          ("abi-file", bpo::value<std::string>(&user_trx_config._abi_data_file_path), "The path to the contract abi file to use for the supplied transaction action data")
          ("actions-data", bpo::value<std::string>(&user_trx_config._actions_data_json_file_or_str), "The json actions data file or json actions data description string to use")
          ("actions-auths", bpo::value<std::string>(&user_trx_config._actions_auths_json_file_or_str), "The json actions auth file or json actions auths description string to use, containting authAcctName to activePrivateKey pairs.")
+         ("api-endpoint", bpo::value<std::string>(&provider_config._api_endpoint), "The api endpoint to direct transactions to. Defaults to: '/v1/chain/send_transaction2'")
+         ("peer-endpoint-type", bpo::value<std::string>(&provider_config._peer_endpoint_type)->default_value("p2p"), "Identify the peer endpoint api type to determine how to send transactions. Allowable 'p2p' and 'http'. Default: 'p2p'")
          ("peer-endpoint", bpo::value<std::string>(&provider_config._peer_endpoint)->default_value("127.0.0.1"), "set the peer endpoint to send transactions to")
          ("port", bpo::value<uint16_t>(&provider_config._port)->default_value(9876), "set the peer endpoint port to send transactions to")
          ("help,h", "print this list")
@@ -172,6 +174,12 @@ int main(int argc, char** argv) {
          cli.print(std::cerr);
          return INITIALIZE_FAIL;
       }
+
+      if (!(provider_config._peer_endpoint_type == "p2p" || provider_config._peer_endpoint_type == "http")) {
+         ilog("Initialization error: peer-endpoint-type must be either 'p2p', or 'http'");
+         cli.print(std::cerr);
+         return INITIALIZE_FAIL;
+      }
    } catch(bpo::unknown_option& ex) {
       std::cerr << ex.what() << std::endl;
       cli.print(std::cerr);
@@ -195,6 +203,7 @@ int main(int argc, char** argv) {
       et::trx_tps_tester<et::trx_generator, et::tps_performance_monitor> tester{generator, monitor, tester_config};
 
       if (!tester.run()) {
+         wlog("Exiting main with OTHER_FAIL");
          return OTHER_FAIL;
       }
    } else {
@@ -204,14 +213,16 @@ int main(int argc, char** argv) {
       et::trx_tps_tester<et::transfer_trx_generator, et::tps_performance_monitor> tester{generator, monitor, tester_config};
 
       if (!tester.run()) {
+         wlog("Exiting main with OTHER_FAIL");
          return OTHER_FAIL;
       }
    }
 
    if (monitor->terminated_early()) {
+      wlog("Exiting main with TERMINATED_EARLY");
       return TERMINATED_EARLY;
    }
-   
-   return SUCCESS;
 
+   ilog("Exiting main SUCCESS");
+   return SUCCESS;
 }

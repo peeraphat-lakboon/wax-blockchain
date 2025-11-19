@@ -1,12 +1,8 @@
 #pragma once
 #include <eosio/chain/types.hpp>
-#include <eosio/chain/block_state.hpp>
 #include <eosio/chain/trace.hpp>
 
 namespace eosio::chain_apis {
-
-template<typename T>
-using next_function = std::function<void(const std::variant<fc::exception_ptr, T>&)>;
 
 /**
  * This class manages the ephemeral indices and data that provide the transaction retry feature.
@@ -51,7 +47,7 @@ public:
     * @param next report result to user by calling next
     * @throws throw tx_resource_exhaustion if trx would exceeds max_mem_usage_size
     */
-   void track_transaction( chain::packed_transaction_ptr ptrx, std::optional<uint16_t> num_blocks, next_function<std::unique_ptr<fc::variant>> next );
+   void track_transaction( chain::packed_transaction_ptr ptrx, std::optional<uint16_t> num_blocks, eosio::chain::next_function<std::unique_ptr<fc::variant>> next );
 
    /**
     * Attach to chain applied_transaction signal
@@ -67,12 +63,12 @@ public:
    /**
     * Attach to chain accepted_block signal
     */
-   void on_accepted_block(const chain::block_state_ptr& block );
+   void on_accepted_block( uint32_t block_num );
 
    /**
     * Attach to chain irreversible_block signal
     */
-   void on_irreversible_block(const chain::block_state_ptr& block );
+   void on_irreversible_block( const chain::signed_block_ptr& block );
 
 private:
    std::unique_ptr<struct trx_retry_db_impl> _impl;

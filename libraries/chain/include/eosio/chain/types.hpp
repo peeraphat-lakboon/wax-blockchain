@@ -8,7 +8,6 @@
 #include <fc/io/varint.hpp>
 #include <fc/io/enum_type.hpp>
 #include <fc/crypto/sha224.hpp>
-#include <fc/safe.hpp>
 #include <fc/container/flat.hpp>
 #include <fc/string.hpp>
 #include <fc/io/raw.hpp>
@@ -26,24 +25,22 @@
 #include <cstdint>
 
 #define OBJECT_CTOR1(NAME) \
-    NAME() = delete; \
     public: \
-    template<typename Constructor, typename Allocator> \
-    NAME(Constructor&& c, chainbase::allocator<Allocator>) \
+    template<typename Constructor> \
+    NAME(Constructor&& c, chainbase::constructor_tag) \
     { c(*this); }
-#define OBJECT_CTOR2_MACRO(x, y, field) ,field(a)
+#define OBJECT_CTOR2_MACRO(x, y, field) ,field()
 #define OBJECT_CTOR2(NAME, FIELDS) \
-    NAME() = delete; \
     public: \
-    template<typename Constructor, typename Allocator> \
-    NAME(Constructor&& c, chainbase::allocator<Allocator> a) \
+    template<typename Constructor> \
+    NAME(Constructor&& c, chainbase::constructor_tag)            \
     : id(0) BOOST_PP_SEQ_FOR_EACH(OBJECT_CTOR2_MACRO, _, FIELDS) \
     { c(*this); }
 #define OBJECT_CTOR(...) BOOST_PP_OVERLOAD(OBJECT_CTOR, __VA_ARGS__)(__VA_ARGS__)
 
 #define _V(n, v)  fc::mutable_variant_object(n, v)
 
-namespace eosio { namespace chain {
+namespace eosio::chain {
    using                               std::map;
    using                               std::vector;
    using                               std::unordered_map;
@@ -61,7 +58,7 @@ namespace eosio { namespace chain {
    using                               std::to_string;
    using                               std::all_of;
 
-   using                               fc::path;
+   using                               std::filesystem::path;
    using                               fc::variant_object;
    using                               fc::variant;
    using                               fc::enum_type;
@@ -69,7 +66,6 @@ namespace eosio { namespace chain {
    using                               fc::signed_int;
    using                               fc::time_point_sec;
    using                               fc::time_point;
-   using                               fc::safe;
    using                               fc::flat_map;
    using                               fc::flat_multimap;
    using                               fc::flat_set;
@@ -78,23 +74,20 @@ namespace eosio { namespace chain {
    using public_key_type  = fc::crypto::public_key;
    using private_key_type = fc::crypto::private_key;
    using signature_type   = fc::crypto::signature;
-#if BOOST_VERSION >= 107100
-      // configurable boost deque performs much better than std::deque in our use cases
-      using block_1024_option_t = boost::container::deque_options< boost::container::block_size<1024u> >::type;
-      template<typename T>
-      using deque = boost::container::deque< T, void, block_1024_option_t >;
-#else
-      template<typename T>
-    using deque = std::deque<T>;
-#endif
+
+   // configurable boost deque (for boost >= 1.71) performs much better than std::deque in our use cases
+   using block_1024_option_t = boost::container::deque_options< boost::container::block_size<1024u> >::type;
+   template<typename T>
+   using deque = boost::container::deque< T, void, block_1024_option_t >;
+   
    struct void_t{};
 
    using chainbase::allocator;
    using shared_string = chainbase::shared_string;
+   
    template<typename T>
-   using shared_vector = boost::interprocess::vector<T, allocator<T>>;
-   template<typename T>
-   using shared_set = boost::interprocess::set<T, std::less<T>, allocator<T>>;
+   using shared_vector = chainbase::shared_vector<T>;
+   
    template<typename K, typename V>
    using shared_flat_multimap = boost::interprocess::flat_multimap< K, V, std::less<K>, allocator< std::pair<K,V> > >;
 
@@ -104,25 +97,23 @@ namespace eosio { namespace chain {
     * serialization and to/from variant
     */
    class shared_blob : public shared_string {
-      public:
-         shared_blob() = delete;
-         shared_blob(shared_blob&&) = default;
+   public:
+      shared_blob() = default;
 
-         shared_blob(const shared_blob& s) = default;
+      shared_blob(shared_blob&&) = default;
+      shared_blob(const shared_blob& s) = default;
 
+      explicit shared_blob(std::string_view s) : shared_string(s) {}
 
-         shared_blob& operator=(const shared_blob& s) = default;
+      template <typename InputIterator>
+      shared_blob(InputIterator f, InputIterator l) : shared_string(f, l) {}
 
-         shared_blob& operator=(shared_blob&& ) = default;
-
-         template <typename InputIterator>
-         shared_blob(InputIterator f, InputIterator l, const allocator_type& a)
-         :shared_string(f,l,a)
-         {}
-
-         shared_blob(const allocator_type& a)
-         :shared_string(a)
-         {}
+      shared_blob& operator=(const shared_blob& s) = default;
+      shared_blob& operator=(shared_blob&& ) = default;
+      shared_blob& operator=(std::string_view sv) {
+         static_cast<shared_string&>(*this) = sv;
+         return *this;
+      }
    };
 
    using action_name      = name;
@@ -253,15 +244,6 @@ namespace eosio { namespace chain {
    using bytes               = vector<char>;
    using digests_t           = deque<digest_type>;
 
-   struct sha256_less {
-      bool operator()( const fc::sha256& lhs, const fc::sha256& rhs ) const {
-       return
-             std::tie(lhs._hash[0], lhs._hash[1], lhs._hash[2], lhs._hash[3]) <
-             std::tie(rhs._hash[0], rhs._hash[1], rhs._hash[2], rhs._hash[3]);
-      }
-   };
-
-
    /**
     *  Extentions are prefixed with type and are a buffer that can be
     *  interpreted by code that is aware and ignored by unaware code.
@@ -375,7 +357,7 @@ namespace eosio { namespace chain {
    }
 
    template<typename E, typename F>
-   static inline auto has_field( F flags, E field )
+   static constexpr auto has_field( F flags, E field )
    -> std::enable_if_t< std::is_integral<F>::value && std::is_unsigned<F>::value &&
                         std::is_enum<E>::value && std::is_same< F, std::underlying_type_t<E> >::value, bool>
    {
@@ -383,7 +365,7 @@ namespace eosio { namespace chain {
    }
 
    template<typename E, typename F>
-   static inline auto set_field( F flags, E field, bool value = true )
+   static constexpr auto set_field( F flags, E field, bool value = true )
    -> std::enable_if_t< std::is_integral<F>::value && std::is_unsigned<F>::value &&
                         std::is_enum<E>::value && std::is_same< F, std::underlying_type_t<E> >::value, F >
    {
@@ -396,24 +378,26 @@ namespace eosio { namespace chain {
    template<class... Ts> struct overloaded : Ts... { using Ts::operator()...; };
    template<class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
 
-} }  // eosio::chain
+   // next_function is a function passed to an API (like send_transaction) and which is called at the end of
+   // the API processing on the main thread. The type T is a description of the API result that can be
+   // serialized as output.
+   // The function accepts a variant which can contain an exception_ptr (if an exception occured while
+   // processing the API) or the result T.
+   // The third option is a function which can be executed in a multithreaded context (likely on the
+   // http_plugin thread pool) and which completes the API processing and returns the result T.
+   // -------------------------------------------------------------------------------------------------------
+   template<typename T>
+   using t_or_exception = std::variant<T, fc::exception_ptr>;
 
-namespace chainbase {
-   // chainbase::shared_cow_string
-   template<typename DataStream> inline DataStream& operator<<( DataStream& s, const chainbase::shared_cow_string& v )  {
-      FC_ASSERT( v.size() <= MAX_SIZE_OF_BYTE_ARRAYS );
-      fc::raw::pack( s, fc::unsigned_int((uint32_t)v.size()));
-      if( v.size() ) s.write( v.data(), v.size() );
-      return s;
-   }
+   template<typename T>
+   using next_function_variant = std::variant<fc::exception_ptr, T, std::function<t_or_exception<T>()>>;
 
-   template<typename DataStream> inline DataStream& operator>>( DataStream& s, chainbase::shared_cow_string& v )  {
-      fc::unsigned_int size; fc::raw::unpack( s, size );
-      FC_ASSERT( size.value <= MAX_SIZE_OF_BYTE_ARRAYS );
-      FC_ASSERT( v.size() == 0 );
-      v.resize_and_fill(size.value, [&s](char* buf, std::size_t sz) { s.read(buf, sz); });
-      return s;
-   }
-}
+   template<typename T>
+   using next_function = std::function<void(const next_function_variant<T>&)>;
+
+   // to configure whether a process should be done asynchronously or not
+   enum class async_t { no, yes };
+
+}  // eosio::chain
 
 FC_REFLECT_EMPTY( eosio::chain::void_t )

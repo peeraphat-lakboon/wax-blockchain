@@ -5,7 +5,7 @@ import time
 import json
 
 from TestHarness import Cluster, Node, TestHelper, Utils, WalletMgr, CORE_SYMBOL
-from TestHarness.Cluster import NamedAccounts
+from TestHarness.accounts import NamedAccounts
 from TestHarness.TestHelper import AppArgs
 
 ###############################################################
@@ -31,7 +31,7 @@ extraArgs = appArgs.add(flag="--transaction-time-delta", type=int, help="How man
 extraArgs = appArgs.add(flag="--num-transactions", type=int, help="How many total transactions should be sent", default=1000)
 extraArgs = appArgs.add(flag="--max-transactions-per-second", type=int, help="How many transactions per second should be sent", default=50)
 extraArgs = appArgs.add(flag="--total-accounts", type=int, help="How many accounts should be involved in sending transfers.  Must be greater than %d" % (minTotalAccounts), default=10)
-args = TestHelper.parse_args({"--dump-error-details","--keep-logs","-v","--leave-running","--clean-run","--unshared"}, applicationSpecificArgs=appArgs)
+args = TestHelper.parse_args({"--activate-if","--dump-error-details","--keep-logs","-v","--leave-running","--unshared"}, applicationSpecificArgs=appArgs)
 
 Utils.Debug=args.v
 totalProducerNodes=3
@@ -39,11 +39,9 @@ totalNodes=7
 totalNonProducerNodes=totalNodes-totalProducerNodes
 maxActiveProducers=totalProducerNodes
 totalProducers=totalProducerNodes
-cluster=Cluster(walletd=True,unshared=args.unshared)
+cluster=Cluster(unshared=args.unshared, keepRunning=args.leave_running, keepLogs=args.keep_logs)
+activateIF=args.activate_if
 dumpErrorDetails=args.dump_error_details
-keepLogs=args.keep_logs
-dontKill=args.leave_running
-killAll=args.clean_run
 walletPort=TestHelper.DEFAULT_WALLET_PORT
 blocksPerSec=2
 transBlocksBehind=args.transaction_time_delta * blocksPerSec
@@ -61,8 +59,6 @@ assert numRounds > 3, Print("ERROR: Need more than three rounds: %d" % numRounds
 
 walletMgr=WalletMgr(True, port=walletPort)
 testSuccessful=False
-killEosInstances=not dontKill
-killWallet=not dontKill
 
 WalletdName=Utils.EosWalletName
 ClientName="cleos"
@@ -71,8 +67,6 @@ try:
     TestHelper.printSystemInfo("BEGIN")
 
     cluster.setWalletMgr(walletMgr)
-    cluster.killall(allInstances=killAll)
-    cluster.cleanup()
     Print("Stand up cluster")
 
     specificExtraNodeosArgs={
@@ -84,7 +78,7 @@ try:
 
     # topo=ring all nodes are connected in a ring but also to the bios node
     if cluster.launch(pnodes=totalProducerNodes, totalNodes=totalNodes, totalProducers=totalProducers,
-                      topo="ring",
+                      topo="ring", activateIF=activateIF,
                       specificExtraNodeosArgs=specificExtraNodeosArgs) is False:
         Utils.cmdError("launcher")
         Utils.errorExit("Failed to stand up eos cluster.")
@@ -95,7 +89,8 @@ try:
     Utils.Print("Bios node killed")
     # need bios to pass along blocks so api node can continue without its other peer, but drop trx which is the point of this test
     Utils.Print("Restart bios in drop transactions mode")
-    cluster.biosNode.relaunch("bios", cachePopen=True, addSwapFlags={"--p2p-accept-transactions": "false"})
+    if not cluster.biosNode.relaunch(addSwapFlags={"--p2p-accept-transactions": "false"}):
+        Utils.errorExit("Failed to relaunch bios node")
 
 # ***   create accounts to vote in desired producers   ***
 
@@ -135,14 +130,15 @@ try:
 
     apiNodeCount = len(apiNodes)
 
-    node=apiNodes[0]
+    node=cluster.biosNode # use biosNode to test configured as a producer but not producing
     checkTransIds = []
     startTime = time.perf_counter()
     Print("Create new accounts via %s" % (cluster.eosioAccount.name))
     for account in accounts:
-        trans = node.createInitializeAccount(account, cluster.eosioAccount, stakedDeposit=0, waitForTransBlock=(account == accounts[-1]), stakeNet=1000, stakeCPU=1000, buyRAM=1000, exitOnError=True)
+        trans = node.createInitializeAccount(account, cluster.eosioAccount, stakedDeposit=0, waitForTransBlock=False, stakeNet=1000, stakeCPU=1000, buyRAM=1000, exitOnError=True)
         checkTransIds.append(Node.getTransId(trans))
 
+    node.waitForTransactionsInBlock(checkTransIds)
     nextTime = time.perf_counter()
     Print("Create new accounts took %s sec" % (nextTime - startTime))
     startTime = nextTime
@@ -151,18 +147,21 @@ try:
     for account in accounts:
         transferAmount="1000.0000 {0}".format(CORE_SYMBOL)
         Print("Transfer funds %s from account %s to %s" % (transferAmount, cluster.eosioAccount.name, account.name))
-        trans = node.transferFunds(cluster.eosioAccount, account, transferAmount, "test transfer", waitForTransBlock=(account == accounts[-1]), reportStatus=False)
+        trans = node.transferFunds(cluster.eosioAccount, account, transferAmount, "test transfer", waitForTransBlock=False, reportStatus=False)
         checkTransIds.append(Node.getTransId(trans))
 
+    node.waitForTransactionsInBlock(checkTransIds)
     nextTime = time.perf_counter()
     Print("Transfer funds took %s sec" % (nextTime - startTime))
     startTime = nextTime
 
+    node=apiNodes[0]
     Print("Delegate Bandwidth to new accounts")
     for account in accounts:
-        trans=node.delegatebw(account, 200.0000, 200.0000, waitForTransBlock=(account == accounts[-1]), exitOnError=True, reportStatus=False)
+        trans=node.delegatebw(account, 200.0000, 200.0000, waitForTransBlock=False, exitOnError=True, reportStatus=False)
         checkTransIds.append(Node.getTransId(trans))
 
+    node.waitForTransactionsInBlock(checkTransIds)
     nextTime = time.perf_counter()
     Print("Delegate Bandwidth took %s sec" % (nextTime - startTime))
     startTime = nextTime
@@ -277,8 +276,9 @@ try:
 
         if round % 3 == 0:
             relaunchTime = time.perf_counter()
-            cluster.getNode(4).relaunch(cachePopen=True)
-            cluster.getNode(6).relaunch(cachePopen=True)
+            time.sleep(1) # give time for transactions to be sent
+            cluster.getNode(4).relaunch()
+            cluster.getNode(6).relaunch()
             startRound = startRound - ( time.perf_counter() - relaunchTime )
             startTime = startTime - ( time.perf_counter() - relaunchTime )
 
@@ -379,7 +379,7 @@ try:
 
     testSuccessful = not missingReportError and not delayedReportError
 finally:
-    TestHelper.shutdown(cluster, walletMgr, testSuccessful=testSuccessful, killEosInstances=killEosInstances, killWallet=killWallet, keepLogs=keepLogs, cleanRun=killAll, dumpErrorDetails=dumpErrorDetails)
+    TestHelper.shutdown(cluster, walletMgr, testSuccessful=testSuccessful, dumpErrorDetails=dumpErrorDetails)
 
 errorCode = 0 if testSuccessful else 1
 exit(errorCode)

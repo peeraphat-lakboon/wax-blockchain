@@ -49,7 +49,9 @@ class BlockLogAction(EnumType):
 addEnum(BlockLogAction, "make_index")
 addEnum(BlockLogAction, "trim")
 addEnum(BlockLogAction, "smoke_test")
-addEnum(BlockLogAction, "return_blocks")
+addEnum(BlockLogAction, "return_blocks")              # returns both block log and fork_db blocks
+addEnum(BlockLogAction, "return_blocks_only_log")     # returns block log blocks
+addEnum(BlockLogAction, "return_blocks_only_fork_db") # returns fork_db blocks
 
 ###########################################################################################
 class Utils:
@@ -61,7 +63,7 @@ class Utils:
     EosClientPath=str(testBinPath / "cleos")
     MiscEosClientArgs="--no-auto-keosd"
 
-    LeapClientPath=str(testBinPath / "leap-util")
+    SpringClientPath=str(testBinPath / "spring-util")
 
     EosWalletName="keosd"
     EosWalletPath=str(testBinPath / EosWalletName)
@@ -76,8 +78,8 @@ class Utils:
     DataRoot=os.path.basename(sys.argv[0]).rsplit('.',maxsplit=1)[0]
     PID = os.getpid()
     DataPath= f"{TestLogRoot}/{DataRoot}{PID}"
-    DataDir= f"{DataPath}/"
-    ConfigDir=f"{str(Path.cwd().resolve())}/etc/eosio/"
+    DataDir=f"{DataPath}/"
+    ConfigDir=f"{DataPath}/"
 
     TimeFmt='%Y-%m-%dT%H:%M:%S.%f'
 
@@ -88,16 +90,14 @@ class Utils:
     @staticmethod
     def checkOutputFileWrite(time, cmd, output, error):
         stop=Utils.timestamp()
+        os.makedirs(Utils.TestLogRoot, exist_ok=True)
+        os.makedirs(Utils.DataPath, exist_ok=True)
         if not hasattr(Utils, "checkOutputFile"):
-            if not os.path.isdir(Utils.TestLogRoot):
-                if Utils.Debug: Utils.Print("TestLogRoot creating dir %s in dir: %s" % (Utils.TestLogRoot, os.getcwd()))
-                os.mkdir(Utils.TestLogRoot)
-            if not os.path.isdir(Utils.DataPath):
-                if Utils.Debug: Utils.Print("DataPath creating dir %s in dir: %s" % (Utils.DataPath, os.getcwd()))
-                os.mkdir(Utils.DataPath)
-            filename=f"{Utils.DataPath}/subprocess_results.log"
-            if Utils.Debug: Utils.Print("opening %s in dir: %s" % (filename, os.getcwd()))
-            Utils.checkOutputFile=open(filename,"w")
+            Utils.checkOutputFilename=f"{Utils.DataPath}/subprocess_results.log"
+            if Utils.Debug: Utils.Print("opening %s in dir: %s" % (Utils.checkOutputFilename, os.getcwd()))
+            Utils.checkOutputFile=open(Utils.checkOutputFilename,"w")
+        else:
+            Utils.checkOutputFile=open(Utils.checkOutputFilename,"a")
 
         Utils.checkOutputFile.write(Utils.FileDivider + "\n")
         Utils.checkOutputFile.write("start={%s}\n" % (time))
@@ -157,15 +157,6 @@ class Utils:
         if trailingSlash:
            path=os.path.join(path, "")
         return path
-
-    @staticmethod
-    def rmNodeDataDir(ext, rmState=True, rmBlocks=True, rmStateHist=True):
-        if rmState:
-            shutil.rmtree(Utils.getNodeDataDir(ext, "state"))
-        if rmBlocks:
-            shutil.rmtree(Utils.getNodeDataDir(ext, "blocks"))
-        if rmStateHist:
-            shutil.rmtree(Utils.getNodeDataDir(ext, "state-history"), ignore_errors=True)
 
     @staticmethod
     def getNodeConfigDir(ext, relativeDir=None, trailingSlash=False):
@@ -233,7 +224,7 @@ class Utils:
         Utils.Print(msg)
 
     @staticmethod
-    def waitForObj(lam, timeout=None, sleepTime=3, reporter=None):
+    def waitForObj(lam, timeout=None, sleepTime=1, reporter=None):
         if timeout is None:
             timeout=60
 
@@ -254,6 +245,9 @@ class Utils:
                 if reporter is not None:
                     reporter()
                 time.sleep(sleepTime)
+            else:
+                if timeout == 60:
+                    raise RuntimeError('waitForObj reached 60 second timeout')
         finally:
             if needsNewLine:
                 Utils.Print()
@@ -261,13 +255,13 @@ class Utils:
         return None
 
     @staticmethod
-    def waitForBool(lam, timeout=None, sleepTime=3, reporter=None):
+    def waitForBool(lam, timeout=None, sleepTime=1, reporter=None):
         myLam = lambda: True if lam() else None
         ret=Utils.waitForObj(myLam, timeout, sleepTime, reporter=reporter)
         return False if ret is None else ret
 
     @staticmethod
-    def waitForBoolWithArg(lam, arg, timeout=None, sleepTime=3, reporter=None):
+    def waitForBoolWithArg(lam, arg, timeout=None, sleepTime=1, reporter=None):
         myLam = lambda: True if lam(arg, timeout) else None
         ret=Utils.waitForObj(myLam, timeout, sleepTime, reporter=reporter)
         return False if ret is None else ret
@@ -312,7 +306,7 @@ class Utils:
     @staticmethod
     def runCmdArrReturnJson(cmdArr, trace=False, silentErrors=True):
         retStr=Utils.checkOutput(cmdArr)
-        return Utils.toJson(retStr)
+        return Utils.toJson(retStr, trace, silentErrors)
 
     @staticmethod
     def runCmdReturnStr(cmd, trace=False, ignoreError=False):
@@ -331,8 +325,8 @@ class Utils:
         return Utils.runCmdArrReturnJson(cmdArr, trace=trace, silentErrors=silentErrors)
 
     @staticmethod
-    def processLeapUtilCmd(cmd, cmdDesc, silentErrors=True, exitOnError=False, exitMsg=None):
-        cmd="%s %s" % (Utils.LeapClientPath, cmd)
+    def processSpringUtilCmd(cmd, cmdDesc, silentErrors=True, exitOnError=False, exitMsg=None):
+        cmd="%s %s" % (Utils.SpringClientPath, cmd)
         if Utils.Debug: Utils.Print("cmd: %s" % (cmd))
         if exitMsg is not None:
             exitMsg="Context: " + exitMsg
@@ -417,8 +411,14 @@ class Utils:
         blockLogActionStr=None
         returnType=ReturnType.raw
         if blockLogAction==BlockLogAction.return_blocks:
-            blockLogActionStr=" print-log --as-json-array "
-            returnType=ReturnType.json
+            blockLogActionStr = " print-log --as-json-array "
+            returnType = ReturnType.json
+        elif blockLogAction==BlockLogAction.return_blocks_only_log:
+            blockLogActionStr = " print-log --as-json-array --print-from=block_log "
+            returnType = ReturnType.json
+        elif blockLogAction==BlockLogAction.return_blocks_only_fork_db:
+            blockLogActionStr = " print-log --as-json-array --print-from=fork_db "
+            returnType = ReturnType.json
         elif blockLogAction==BlockLogAction.make_index:
             blockLogActionStr=" make-index "
         elif blockLogAction==BlockLogAction.trim:
@@ -428,7 +428,7 @@ class Utils:
         else:
             unhandledEnumType(blockLogAction)
 
-        cmd="%s block-log %s --blocks-dir %s  %s%s%s" % (Utils.LeapClientPath, blockLogActionStr, blockLogLocation, outputFileStr, firstStr, lastStr)
+        cmd="%s block-log %s --blocks-dir %s  %s%s%s" % (Utils.SpringClientPath, blockLogActionStr, blockLogLocation, outputFileStr, firstStr, lastStr)
         if Utils.Debug: Utils.Print("cmd: %s" % (cmd))
         rtn=None
         try:
@@ -518,9 +518,9 @@ class Utils:
         return "comparison of %s type is not supported, context=%s" % (typeName,context)
 
     @staticmethod
-    def compareFiles(file1: str, file2: str):
-        f1 = open(file1)
-        f2 = open(file2)
+    def compareFiles(file1: str, file2: str, mode="r"):
+        f1 = open(file1, mode)
+        f2 = open(file2, mode)
 
         i = 0
         same = True
@@ -537,23 +537,6 @@ class Utils:
         f1.close()
         f2.close()
         return same
-
-    @staticmethod
-    def rmFromFile(file: str, matchValue: str):
-        """Rm lines from file that match *matchValue*"""
-
-        lines = []
-        with open(file, "r") as f:
-            lines = f.readlines()
-
-        c = 0
-        with open(file, "w") as f:
-            for line in lines:
-                if matchValue not in line:
-                    f.write(line)
-                    c += 1
-
-        return c
 
     @staticmethod
     def addAmount(assetStr: str, deltaStr: str) -> str:
@@ -627,24 +610,4 @@ class Utils:
 
     @staticmethod
     def getNodeosVersion():
-        return os.popen(f"{Utils.EosServerPath} --version").read().replace("\n", "")
-
-
-###########################################################################################
-class Account(object):
-    # pylint: disable=too-few-public-methods
-
-    def __init__(self, name):
-        self.name=name
-
-        self.ownerPrivateKey=None
-        self.ownerPublicKey=None
-        self.activePrivateKey=None
-        self.activePublicKey=None
-
-
-    def __str__(self):
-        return "Name: %s" % (self.name)
-
-    def __repr__(self):
-        return "Name: %s" % (self.name)
+        return os.popen(f"{Utils.EosServerPath} --full-version").read().replace("\n", "")

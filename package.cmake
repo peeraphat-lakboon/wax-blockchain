@@ -1,4 +1,4 @@
-set(CPACK_GENERATOR "TGZ")
+set(CPACK_GENERATOR "TZST")
 find_program(DPKG_FOUND "dpkg")
 find_program(RPMBUILD_FOUND "rpmbuild")
 if(DPKG_FOUND)
@@ -10,7 +10,7 @@ endif()
 
 set(CPACK_PACKAGE_VERSION "${VERSION_FULL}")
 set(CPACK_PACKAGE_FILE_NAME "${CMAKE_PROJECT_NAME}-${VERSION_FULL}")
-if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.9" AND EXISTS /etc/os-release)
+if(EXISTS /etc/os-release)
    #if we're doing the build on Ubuntu or RHELish, add the platform version in to the package name
    file(READ /etc/os-release OS_RELEASE LIMIT 4096)
    if(OS_RELEASE MATCHES "\n?ID=\"?ubuntu" AND OS_RELEASE MATCHES "\n?VERSION_ID=\"?([0-9.]+)")
@@ -39,9 +39,10 @@ string(APPEND CPACK_PACKAGE_FILE_NAME "-${CMAKE_SYSTEM_PROCESSOR}")
 
 set(CPACK_PACKAGE_CONTACT "cc32d9")
 set(CPACK_PACKAGE_VENDOR "cc32d9")
-set(CPACK_COMPONENT_BASE_DESCRIPTION "Port of AntelopeIO software to WAX blockchain")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "WAX port of C++ implementation of the Antelope protocol with Savanna consensus")
+set(CPACK_COMPONENT_BASE_DESCRIPTION "daemon and CLI tools including ${NODE_EXECUTABLE_NAME}, ${CLI_CLIENT_EXECUTABLE_NAME}, and ${KEY_STORE_EXECUTABLE_NAME}")
 set(CPACK_COMPONENT_DEV_DESCRIPTION "headers and libraries for native contract unit testing")
-set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/cc32d9/wax-leap")
+set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/eos-amsterdam-rnd/wax-spring-ce")
 
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
 set(CPACK_DEBIAN_BASE_PACKAGE_SECTION "utils")
@@ -49,18 +50,19 @@ set(CPACK_DEBIAN_BASE_PACKAGE_SECTION "utils")
 set(CPACK_DEBIAN_PACKAGE_CONFLICTS "eosio, mandel, leap")
 set(CPACK_RPM_PACKAGE_CONFLICTS "eosio, mandel, leap")
 
-#only consider "base" and "dev" components for per-component packages
-get_cmake_property(CPACK_COMPONENTS_ALL COMPONENTS)
-list(REMOVE_ITEM CPACK_COMPONENTS_ALL "Unspecified")
+set(CPACK_COMPONENTS_ALL "base")
+if(ENABLE_SPRING_DEV_DEB)
+   list(APPEND CPACK_COMPONENTS_ALL "dev")
+endif()
 
-#enable per component packages for .deb; ensure main package is just "leap", not "leap-base", and make the dev package have "leap-dev" at the front not the back
+#enable per component packages for .deb; ensure main package is just "antelope-spring", not "antelope-spring-base", and make the dev package have "antelope-spring-dev" at the front not the back
 set(CPACK_DEB_COMPONENT_INSTALL ON)
 set(CPACK_DEBIAN_BASE_PACKAGE_NAME "${CMAKE_PROJECT_NAME}")
 set(CPACK_DEBIAN_BASE_FILE_NAME "${CPACK_DEBIAN_FILE_NAME}.deb")
 string(REGEX REPLACE "^(${CMAKE_PROJECT_NAME})" "\\1-dev" CPACK_DEBIAN_DEV_FILE_NAME "${CPACK_DEBIAN_BASE_FILE_NAME}")
 
 #deb package tooling will be unable to detect deps for the dev package. llvm is tricky since we don't know what package could have been used; try to figure it out
-set(CPACK_DEBIAN_DEV_PACKAGE_DEPENDS "libboost-all-dev, libssl-dev, libgmp-dev, python3-numpy")
+set(CPACK_DEBIAN_DEV_PACKAGE_DEPENDS "libgmp-dev, python3-distutils, python3-numpy, zlib1g-dev")
 find_program(DPKG_QUERY "dpkg-query")
 if(DPKG_QUERY AND OS_RELEASE MATCHES "\n?ID=\"?ubuntu" AND LLVM_CMAKE_DIR)
    execute_process(COMMAND "${DPKG_QUERY}" -S "${LLVM_CMAKE_DIR}" COMMAND cut -d: -f1 RESULT_VARIABLE LLVM_PKG_FIND_RESULT OUTPUT_VARIABLE LLVM_PKG_FIND_OUTPUT)

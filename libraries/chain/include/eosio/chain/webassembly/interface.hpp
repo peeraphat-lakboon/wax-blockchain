@@ -153,7 +153,8 @@ namespace webassembly {
           *
           * @param packed_producer_schedule - vector of producer keys
           *
-          * @return -1 if proposing a new producer schedule was unsuccessful, otherwise returns the version of the new proposed schedule.
+          * @return pre-savanna:  -1 if proposing a new producer schedule was unsuccessful, otherwise returns the version of the new proposed schedule.
+          *         post-savanna: -1 if proposing a new producer schedule was unsuccessful, otherwise returns max uint32_t
          */
          int64_t set_proposed_producers(legacy_span<const char> packed_producer_schedule);
 
@@ -169,9 +170,34 @@ namespace webassembly {
           * @param packed_producer_format - format of the producer data blob.
           * @param packed_producer_schedule - packed data of representing the producer schedule in the format indicated.
           *
-          * @return -1 if proposing a new producer schedule was unsuccessful, otherwise returns the version of the new proposed schedule.
+          * @return pre-savanna:  -1 if proposing a new producer schedule was unsuccessful, otherwise returns the version of the new proposed schedule.
+          *         post-savanna: -1 if proposing a new producer schedule was unsuccessful, otherwise returns max uint32_t
          */
          int64_t set_proposed_producers_ex(uint64_t packed_producer_format, legacy_span<const char> packed_producer_schedule);
+
+         /**
+          * Submits a finalizer set change.
+          *
+          *  // V0 format for packed finalizer_policy
+          *  struct finalizer_authority {
+          *     std::string              description;
+          *     uint64_t                 weight = 0; // weight that this finalizer's vote has for meeting fthreshold
+          *     std::vector<uint8_t>     public_key; // Affine little endian non-montgomery g1, cdt/abi_serializer has issues with std::array, size 96
+          *  };
+          *  struct finalizer_policy {
+          *     uint64_t                          threshold = 0;
+          *     std::vector<finalizer_authority>  finalizers;
+          *  };
+          *
+          * Valid formats:
+          * 0 : serialized finalizer_policy
+          *
+          * @ingroup privileged
+          *
+          * @param packed_finalizer_format - format of the finalizer_policy data blob.
+          * @param packed_finalizer_policy - a serialized finalizer_policy object.
+         */
+         void set_finalizers(uint64_t packed_finalizer_format, span<const char> packed_finalizer_policy);
 
          /**
           * Retrieve the blockchain config parameters.
@@ -1717,7 +1743,7 @@ namespace webassembly {
           * @param op1 - a span containing the first operand G1 point.
           * @param op2 - a span containing the second operand G1 point.
           * @param[out] result - the result op1 + op2.
-          * @return -1 if there was an error 0 otherwise
+          * @return -1 if there was an error, 0 otherwise
          */
          int32_t alt_bn128_add(span<const char> op1, span<const char> op2, span<char> result) const;
 
@@ -1728,7 +1754,7 @@ namespace webassembly {
           * @param g1_point - a span containing G1 point.
           * @param scalar   - a span containing the scalar.
           * @param[out] result - g1 * scalar.
-          * @return -1 if there was an error 0 otherwise
+          * @return -1 if there was an error, 0 otherwise
          */
          int32_t alt_bn128_mul(span<const char> g1_point, span<const char> scalar, span<char> result) const;
 
@@ -1752,7 +1778,7 @@ namespace webassembly {
           * @param exp         - a span containing EXPONENT.
           * @param modulus     - a span containing MODULUS.
           * @param[out] out    - the result (BASE**EXPONENT) % MODULUS
-          * @return              -1 if there was an error 0 otherwise
+          * @return              -1 if there was an error, 0 otherwise
          */
          int32_t mod_exp(span<const char> base, span<const char> exp, span<const char> modulus, span<char> out) const;
 
@@ -1769,7 +1795,7 @@ namespace webassembly {
           * @param t1_offset     - offset counters - unsigned 64-bit little-endian word
           * @param final         - the final block indicator flag - (1-true, all other values == false)
           * @param[out] result   - the result
-          * @return                -1 if there was an error 0 otherwise
+          * @return                -1 if there was an error, 0 otherwise
          */
          int32_t blake2_f( uint32_t rounds, span<const char> state, span<const char> message, span<const char> t0_offset, span<const char> t1_offset, int32_t final, span<char> result) const;
 
@@ -1791,9 +1817,119 @@ namespace webassembly {
           * @param digest - digest of the message that was signed.
           * @param[out] pub - output buffer for the public key result.
           *
-          * @return -1 if there was an error 0 otherwise.
+          * @return -1 if there was an error, 0 otherwise.
          */
          int32_t k1_recover( span<const char> signature, span<const char> digest, span<char> pub) const;
+
+         /**
+          * Host function for G1 addition on the elliptic curve bls12-381
+          *
+          * @ingroup crypto
+          * @param op1 - a span containing the affine coordinates of the first operand G1 point - 96 bytes little-endian.
+          * @param op2 - a span containing the affine coordinates of the second operand G1 point - 96 bytes little-endian.
+          * @param[out] result - the result op1 + op2 - affine coordinates 96 bytes little-endian.
+          * @return -1 if there was an error, 0 otherwise
+         */
+         int32_t bls_g1_add(span<const char> op1, span<const char> op2, span<char> result) const;
+
+         /**
+          * Host function for G2 addition on the elliptic curve bls12-381
+          *
+          * @ingroup crypto
+          * @param op1 - a span containing the affine coordinates of the first operand G2 point - 192 bytes little-endian.
+          * @param op2 - a span containing the affine coordinates of the second operand G2 point - 192 bytes little-endian.
+          * @param[out] result - the result op1 + op2 - affine coordinates 192 bytes little-endian.
+          * @return -1 if there was an error, 0 otherwise
+         */
+         int32_t bls_g2_add(span<const char> op1, span<const char> op2, span<char> result) const;
+
+         /**
+          * Host function for G1 weighted sum on the elliptic curve bls12-381
+          *
+          * @ingroup crypto
+          * @param points - a span containing a list of G1 points (P0, P1, P2... Pn) - affine coordinates 96*n bytes little-endian.
+          * @param scalars - a span containing a list of 32 byte scalars (s0, s1, s2... sn) - 32*n bytes little-endian.
+          * @param n - the number of elements in the lists.
+          * @param[out] result - the result s0 * P0 + s1 * P1 + ... + sn * Pn. - affine coordinates 96 bytes little-endian.
+          * @return -1 if there was an error, 0 otherwise
+         */
+         int32_t bls_g1_weighted_sum(span<const char> points, span<const char> scalars, const uint32_t n, span<char> result) const;
+
+         /**
+          * Host function for G2 weighted sum on the elliptic curve bls12-381
+          *
+          * @ingroup crypto
+          * @param points - a span containing a list of G2 points (P0, P1, P2... Pn) - affine coordinates 192*n bytes little-endian.
+          * @param scalars - a span containing a list of 32 byte scalars (s0, s1, s2... sn) - 32*n bytes little-endian.
+          * @param n - the number of elements in the lists.
+          * @param[out] result - the result s0 * P0 + s1 * P1 + ... + sn * Pn - affine coordinates 192 bytes little-endian.
+          * @return -1 if there was an error, 0 otherwise
+         */
+         int32_t bls_g2_weighted_sum(span<const char> points, span<const char> scalars, const uint32_t n, span<char> result) const;
+
+         /**
+          * Host function to calculate the pairing of (G1, G2) pairs on the elliptic curve bls12-381
+          *
+          * @ingroup crypto
+          * @param g1_points - a span containing a list of G1 points (P0, P1, P2... Pn) - affine coordinates 96*n bytes little-endian.
+          * @param g2_points - a span containing a list of G2 points (P0, P1, P2... Pn) - affine coordinates 192*n bytes little-endian..
+          * @param n - the number of elements in the lists.
+          * @param[out] result - the result e(g1_0, g2_0) * e(g1_1, g2_1) * ... * e(g1_n, g2_n) - 576 bytes little-endian.
+          * @return -1 if there was an error, 0 otherwise
+         */
+         int32_t bls_pairing(span<const char> g1_points, span<const char> g2_points, const uint32_t n, span<char> result) const;
+
+         /**
+          * Host function for mapping fp to G1 on the elliptic curve bls12-381
+          *
+          * @ingroup crypto
+          * @param e - a span containing the field element fp to be mapped - 48 bytes little-endian.
+          * @param[out] result - the resulting element in G1 - affine coordinates 96 bytes little-endian.
+          * @return -1 if there was an error, 0 otherwise
+         */
+         int32_t bls_g1_map(span<const char> e, span<char> result) const;
+
+         /**
+          * Host function for mapping fp2 to G2 on the elliptic curve bls12-381
+          *
+          * @ingroup crypto
+          * @param e - a span containing the field element fp2 to be mapped - 96 bytes little-endian.
+          * @param[out] result - the resulting element in G2 - affine coordinates 192 bytes little-endian.
+          * @return -1 if there was an error, 0 otherwise
+         */
+         int32_t bls_g2_map(span<const char> e, span<char> result) const;
+
+         /**
+          * Host function for modular reduction of 64 bytes wide scalar to a field element (fp, 48 bytes) of the elliptic curve bls12-381
+          *
+          * @ingroup crypto
+          * @param s - a span containing the 64 bytes little-endian wide scalar to be reduced.
+          * @param[out] result - the resulting field element fp - 48 bytes little-endian.
+          * @return -1 if there was an error, 0 otherwise
+         */
+         int32_t bls_fp_mod(span<const char> s, span<char> result) const;
+
+         /**
+          * Host function for multiplication of field elements (fp, 48 bytes) of the elliptic curve bls12-381
+          *
+          * @ingroup crypto
+          * @param op1 - a span containing the first operand fp point - 48 bytes little-endian.
+          * @param op2 - a span containing the second operand fp point - 48 bytes little-endian.
+          * @param[out] result - the result op1 * op2 - 48 bytes little-endian.
+          * @return -1 if there was an error, 0 otherwise
+         */
+         int32_t bls_fp_mul(span<const char> op1, span<const char> op2, span<char> result) const;
+
+         /**
+          * Host function for exponentiation of field elements (fp, 48 bytes) of the elliptic curve bls12-381
+          *
+          * @ingroup crypto
+          * @param base - a span containing the base fp point - 48 bytes little-endian.
+          * @param exp - a span containing the 64 bytes little-endian wide scalar as exponent.
+          * @param[out] result - the result of base to the power of exp - 48 bytes little-endian.
+          * @return -1 if there was an error, 0 otherwise
+         */
+         int32_t bls_fp_exp(span<const char> base, span<const char> exp, span<char> result) const;
 
          // compiler builtins api
          void __ashlti3(legacy_ptr<int128_t>, uint64_t, uint64_t, uint32_t) const;
@@ -1802,7 +1938,7 @@ namespace webassembly {
          void __lshrti3(legacy_ptr<int128_t>, uint64_t, uint64_t, uint32_t) const;
          void __divti3(legacy_ptr<int128_t>, uint64_t, uint64_t, uint64_t, uint64_t) const;
          void __udivti3(legacy_ptr<uint128_t>, uint64_t, uint64_t, uint64_t, uint64_t) const;
-         void __multi3(legacy_ptr<int128_t>, uint64_t, uint64_t, uint64_t, uint64_t) const;
+         void __multi3(legacy_ptr<uint128_t>, uint64_t, uint64_t, uint64_t, uint64_t) const;
          void __modti3(legacy_ptr<int128_t>, uint64_t, uint64_t, uint64_t, uint64_t) const;
          void __umodti3(legacy_ptr<uint128_t>, uint64_t, uint64_t, uint64_t, uint64_t) const;
          void __addtf3(legacy_ptr<float128_t>, uint64_t, uint64_t, uint64_t, uint64_t) const;

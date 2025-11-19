@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import random
+import signal
 
 from TestHarness import Cluster, TestHelper, Utils, WalletMgr
 from TestHarness.TestHelper import AppArgs
@@ -11,7 +12,7 @@ from TestHarness.TestHelper import AppArgs
 # Performs currency transfers between N accounts sent to http endpoints of
 # N nodes and verifies, after a steady state is reached, that the accounts
 # balances are correct
-# if called with --nodes-file it will will load a json description of nodes
+# if called with --nodes-file it will load a json description of nodes
 # that are already running and run distributed test against them (not
 # currently testing this feature)
 #
@@ -21,34 +22,26 @@ Print=Utils.Print
 errorExit=Utils.errorExit
 
 appArgs = AppArgs()
-extraArgs = appArgs.add_bool(flag="--speculative", help="Run nodes in read-mode=speculative")
-args=TestHelper.parse_args({"-p","-n","-d","-s","--nodes-file","--seed", "--speculative"
-                           ,"--dump-error-details","-v","--leave-running","--clean-run","--keep-logs","--unshared"}, applicationSpecificArgs=appArgs)
+args=TestHelper.parse_args({"-p","-n","-d","-s","--nodes-file","--seed", "--activate-if"
+                           ,"--dump-error-details","-v","--leave-running","--keep-logs","--unshared"}, applicationSpecificArgs=appArgs)
 
 pnodes=args.p
 topo=args.s
 delay=args.d
 total_nodes = pnodes if args.n < pnodes else args.n
+total_nodes = total_nodes if total_nodes > pnodes + 3 else pnodes + 3
 debug=args.v
 nodesFile=args.nodes_file
 dontLaunch=nodesFile is not None
 seed=args.seed
-dontKill=args.leave_running
 dumpErrorDetails=args.dump_error_details
-killAll=args.clean_run
-keepLogs=args.keep_logs
-speculative=args.speculative
-
-killWallet=not dontKill
-killEosInstances=not dontKill
-if nodesFile is not None:
-    killEosInstances=False
+activateIF=args.activate_if
 
 Utils.Debug=debug
 testSuccessful=False
 
 random.seed(seed) # Use a fixed seed for repeatability.
-cluster=Cluster(walletd=True,unshared=args.unshared)
+cluster=Cluster(unshared=args.unshared, keepRunning=True if nodesFile is not None else args.leave_running, keepLogs=args.keep_logs, loggingLevel="all")
 walletMgr=WalletMgr(True)
 
 try:
@@ -62,24 +55,21 @@ try:
             errorExit("Failed to initilize nodes from Json string.")
         total_nodes=len(cluster.getNodes())
 
-        walletMgr.killall(allInstances=killAll)
-        walletMgr.cleanup()
         print("Stand up walletd")
         if walletMgr.launch() is False:
             errorExit("Failed to stand up keosd.")
     else:
-        cluster.killall(allInstances=killAll)
-        cluster.cleanup()
-
         Print ("producing nodes: %s, non-producing nodes: %d, topology: %s, delay between nodes launch(seconds): %d" %
                (pnodes, total_nodes-pnodes, topo, delay))
 
         Print("Stand up cluster")
-        extraNodeosArgs = ""
-        if speculative:
-           extraNodeosArgs = " --read-mode speculative "
+        specificExtraNodeosArgs = {}
+        specificExtraNodeosArgs[total_nodes-1] = f' --read-mode head '
+        if activateIF: # irreversible mode speculative trx execution not recommended in legacy mode
+            specificExtraNodeosArgs[total_nodes-2] = f' --read-mode irreversible '
+        specificExtraNodeosArgs[total_nodes-3] = f' --read-mode speculative '
 
-        if cluster.launch(pnodes=pnodes, totalNodes=total_nodes, topo=topo, delay=delay, extraNodeosArgs=extraNodeosArgs) is False:
+        if cluster.launch(pnodes=pnodes, totalNodes=total_nodes, topo=topo, delay=delay, specificExtraNodeosArgs=specificExtraNodeosArgs, activateIF=activateIF) is False:
             errorExit("Failed to stand up eos cluster.")
 
         Print ("Wait for Cluster stabilization")
@@ -110,21 +100,28 @@ try:
         errorExit("Accounts creation failed.")
 
     Print("Spread funds and validate")
-    if not cluster.spreadFundsAndValidate(10):
+    # if activateIF then irreversible node needs funds to be irreversible before validation
+    if not cluster.spreadFundsAndValidate(10, waitForFinalization=activateIF):
         errorExit("Failed to spread and validate funds.")
 
     print("Funds spread validated")
 
-    if not dontKill:
-        cluster.killall(allInstances=killAll)
+    if not args.leave_running:
+        for node in cluster.getAllNodes():
+            node.kill(signal.SIGTERM)
     else:
         print("NOTE: Skip killing nodes, block log verification will be limited")
 
     cluster.compareBlockLogs()
 
+    # verify only one start block per block unless interrupted
+    for node in cluster.getAllNodes():
+        if not node.verifyStartingBlockMessages():
+            errorExit("Found more than one Starting block in logs")
+
     testSuccessful=True
 finally:
-    TestHelper.shutdown(cluster, walletMgr, testSuccessful, killEosInstances, killWallet, keepLogs, killAll, dumpErrorDetails)
+    TestHelper.shutdown(cluster, walletMgr, testSuccessful, dumpErrorDetails)
 
 exitCode = 0 if testSuccessful else 1
 exit(exitCode)

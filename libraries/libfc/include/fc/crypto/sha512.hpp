@@ -1,32 +1,31 @@
 #pragma once
 #include <fc/fwd.hpp>
 #include <fc/string.hpp>
+#include <fc/crypto/packhash.hpp>
 
 namespace fc
 {
 
-class sha512 
+class sha512 : public add_packhash_to_hash<sha512>
 {
   public:
     sha512();
-    explicit sha512( const string& hex_str );
+    explicit sha512( const std::string& hex_str );
 
-    string str()const;
-    operator string()const;
+    std::string str()const;
+    operator std::string()const;
 
     char*       data();
     const char* data()const;
     size_t data_size()const { return 512 / 8; }
 
     static sha512 hash( const char* d, uint32_t dlen );
-    static sha512 hash( const string& );
+    static sha512 hash( const std::string& );
 
     template<typename T>
     static sha512 hash( const T& t ) 
     { 
-      sha512::encoder e; 
-      e << t; 
-      return e.result(); 
+      return packhash(t);
     } 
 
     class encoder 

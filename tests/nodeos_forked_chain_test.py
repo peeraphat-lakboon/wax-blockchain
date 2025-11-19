@@ -7,7 +7,7 @@ import json
 import signal
 import os
 
-from TestHarness import Cluster, Node, TestHelper, Utils, WalletMgr, CORE_SYMBOL
+from TestHarness import Cluster, Node, TestHelper, Utils, WalletMgr, CORE_SYMBOL, createAccountKeys
 from TestHarness.TestHelper import AppArgs
 
 ###############################################################
@@ -127,7 +127,7 @@ def getMinHeadAndLib(prodNodes):
 
 appArgs = AppArgs()
 extraArgs = appArgs.add(flag="--num-ship-clients", type=int, help="How many ship_streamers should be started", default=2)
-args = TestHelper.parse_args({"--prod-count","--dump-error-details","--keep-logs","-v","--leave-running","--clean-run",
+args = TestHelper.parse_args({"--prod-count","--activate-if","--dump-error-details","--keep-logs","-v","--leave-running",
                               "--wallet-port","--unshared"}, applicationSpecificArgs=appArgs)
 Utils.Debug=args.v
 totalProducerNodes=2
@@ -135,19 +135,15 @@ totalNonProducerNodes=1
 totalNodes=totalProducerNodes+totalNonProducerNodes
 maxActiveProducers=21
 totalProducers=maxActiveProducers
-cluster=Cluster(walletd=True,unshared=args.unshared)
+activateIF=args.activate_if
 dumpErrorDetails=args.dump_error_details
-keepLogs=args.keep_logs
-dontKill=args.leave_running
 prodCount=args.prod_count
-killAll=args.clean_run
 walletPort=args.wallet_port
 num_clients=args.num_ship_clients
+cluster=Cluster(unshared=args.unshared, keepRunning=args.leave_running, keepLogs=args.keep_logs)
 
 walletMgr=WalletMgr(True, port=walletPort)
 testSuccessful=False
-killEosInstances=not dontKill
-killWallet=not dontKill
 
 WalletdName=Utils.EosWalletName
 ClientName="cleos"
@@ -156,25 +152,25 @@ try:
     TestHelper.printSystemInfo("BEGIN")
 
     cluster.setWalletMgr(walletMgr)
-    cluster.killall(allInstances=killAll)
-    cluster.cleanup()
     Print("Stand up cluster")
     specificExtraNodeosArgs={}
     shipNodeNum = 0
-    specificExtraNodeosArgs[shipNodeNum]="--plugin eosio::state_history_plugin --disable-replay-opts"
+    specificExtraNodeosArgs[shipNodeNum]="--plugin eosio::state_history_plugin"
 
     # producer nodes will be mapped to 0 through totalProducerNodes-1, so the number totalProducerNodes will be the non-producing node
     specificExtraNodeosArgs[totalProducerNodes]="--plugin eosio::test_control_api_plugin"
-
+    # test expects split network to advance with single producer
+    extraNodeosArgs=" --production-pause-vote-timeout-ms 0 "
 
     # ***   setup topogrophy   ***
 
-    # "bridge" shape connects defprocera through defproducerk (in node0) to each other and defproducerl through defproduceru (in node01)
+    # bridge_consecutive_shape.json shape connects defproducera through defproducerk (consecutive in node0) to each other
+    # and defproducerl through defproduceru (consecutive in node01)
     # and the only connection between those 2 groups is through the bridge node
 
-    if cluster.launch(prodCount=prodCount, topo="bridge", pnodes=totalProducerNodes,
-                      totalNodes=totalNodes, totalProducers=totalProducers,
-                      specificExtraNodeosArgs=specificExtraNodeosArgs) is False:
+    if cluster.launch(prodCount=prodCount, topo="./tests/bridge_consecutive_shape.json", pnodes=totalProducerNodes,
+                      totalNodes=totalNodes, totalProducers=totalProducers, activateIF=activateIF, biosFinalizer=False,
+                      specificExtraNodeosArgs=specificExtraNodeosArgs, extraNodeosArgs=extraNodeosArgs) is False:
         Utils.cmdError("launcher")
         Utils.errorExit("Failed to stand up eos cluster.")
     Print("Validating system accounts after bootstrap")
@@ -183,7 +179,7 @@ try:
 
     # ***   create accounts to vote in desired producers   ***
 
-    accounts=cluster.createAccountKeys(5)
+    accounts=createAccountKeys(5)
     if accounts is None:
         Utils.errorExit("FAILURE - create keys")
     accounts[0].name="tester111111"
@@ -229,7 +225,7 @@ try:
 
     # ***   delegate bandwidth to accounts   ***
 
-    node=prodNodes[0]
+    node=nonProdNode
     # create accounts via eosio as otherwise a bid is needed
     for account in accounts:
         Print("Create new account %s via %s" % (account.name, cluster.eosioAccount.name))
@@ -505,8 +501,8 @@ try:
     Print("Tracking the blocks from the divergence till there are 10*12 blocks on one chain and 10*12+1 on the other, from block %d to %d" % (killBlockNum, lastBlockNum))
 
     for blockNum in range(killBlockNum,lastBlockNum):
-        blockProducer0=prodNodes[0].getBlockProducerByNum(blockNum)
-        blockProducer1=prodNodes[1].getBlockProducerByNum(blockNum)
+        blockProducer0=prodNodes[0].getBlockProducerByNum(blockNum, timeout=70)
+        blockProducer1=prodNodes[1].getBlockProducerByNum(blockNum, timeout=70)
         blockProducers0.append({"blockNum":blockNum, "prod":blockProducer0})
         blockProducers1.append({"blockNum":blockNum, "prod":blockProducer1})
 
@@ -604,11 +600,11 @@ try:
         block_num = start_block_num
         for i in data:
             # fork can cause block numbers to be repeated
-            this_block_num = i['get_blocks_result_v0']['this_block']['block_num']
+            this_block_num = i['get_blocks_result_v1']['this_block']['block_num']
             if this_block_num < block_num:
                 block_num = this_block_num
             assert block_num == this_block_num, f"{block_num} != {this_block_num}"
-            assert isinstance(i['get_blocks_result_v0']['block'], str) # verify block in result
+            assert isinstance(i['get_blocks_result_v1']['block'], str) # verify block in result
             block_num += 1
         assert block_num-1 == end_block_num, f"{block_num-1} != {end_block_num}"
 
@@ -617,16 +613,17 @@ try:
 
     testSuccessful=True
 finally:
-    TestHelper.shutdown(cluster, walletMgr, testSuccessful=testSuccessful, killEosInstances=killEosInstances, killWallet=killWallet, keepLogs=keepLogs, cleanRun=killAll, dumpErrorDetails=dumpErrorDetails)
+    TestHelper.shutdown(cluster, walletMgr, testSuccessful=testSuccessful, dumpErrorDetails=dumpErrorDetails)
 
-    if not testSuccessful:
-        Print(Utils.FileDivider)
-        Print("Compare Blocklog")
-        cluster.compareBlockLogs()
-        Print(Utils.FileDivider)
-        Print("Print Blocklog")
-        cluster.printBlockLog()
-        Print(Utils.FileDivider)
+# Too much output for ci/cd
+#     if not testSuccessful:
+#         Print(Utils.FileDivider)
+#         Print("Compare Blocklog")
+#         cluster.compareBlockLogs()
+#         Print(Utils.FileDivider)
+#         Print("Print Blocklog")
+#         cluster.printBlockLog()
+#         Print(Utils.FileDivider)
 
 exitCode = 0 if testSuccessful else 1
 exit(exitCode)

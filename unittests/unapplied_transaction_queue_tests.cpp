@@ -1,5 +1,6 @@
 #include <boost/test/unit_test.hpp>
 #include <eosio/testing/tester.hpp>
+#include <eosio/chain/fork_database.hpp>
 #include <eosio/chain/unapplied_transaction_queue.hpp>
 #include <eosio/chain/contract_types.hpp>
 
@@ -15,7 +16,7 @@ auto unique_trx_meta_data( fc::time_point expire = fc::time_point::now() + fc::s
 
    signed_transaction trx;
    account_name creator = config::system_account_name;
-   trx.expiration = expire;
+   trx.expiration = fc::time_point_sec{expire};
    trx.actions.emplace_back( vector<permission_level>{{creator,config::active_name}},
                              onerror{ nextid, "test", 4 });
    return transaction_metadata::create_no_recover_keys( std::make_shared<packed_transaction>( std::move(trx) ),
@@ -33,7 +34,7 @@ auto next( unapplied_transaction_queue& q ) {
 }
 
 auto create_test_block_state( deque<transaction_metadata_ptr> trx_metas ) {
-   signed_block_ptr block = std::make_shared<signed_block>();
+   auto block = std::make_unique<signed_block>();
    for( auto& trx_meta : trx_metas ) {
       block->transactions.emplace_back( *trx_meta->packed_trx() );
    }
@@ -43,7 +44,7 @@ auto create_test_block_state( deque<transaction_metadata_ptr> trx_metas ) {
    auto priv_key = eosio::testing::base_tester::get_private_key( block->producer, "active" );
    auto pub_key  = eosio::testing::base_tester::get_public_key( block->producer, "active" );
 
-   auto prev = std::make_shared<block_state>();
+   auto prev = std::make_shared<block_state_legacy>();
    auto header_bmroot = digest_type::hash( std::make_pair( block->digest(), prev->blockroot_merkle.get_root() ) );
    auto sig_digest = digest_type::hash( std::make_pair(header_bmroot, prev->pending_schedule.schedule_hash) );
    block->producer_signature = priv_key.sign( sig_digest );
@@ -58,15 +59,17 @@ auto create_test_block_state( deque<transaction_metadata_ptr> trx_metas ) {
          result.emplace_back(k.sign(d));
       return result;
    };
-   pending_block_header_state pbhs;
+   pending_block_header_state_legacy pbhs;
    pbhs.producer = block->producer;
    producer_authority_schedule schedule = { 0, { producer_authority{block->producer, block_signing_authority_v0{ 1, {{pub_key, 1}} } } } };
    pbhs.active_schedule = schedule;
    pbhs.valid_block_signing_authority = block_signing_authority_v0{ 1, {{pub_key, 1}} };
-   auto bsp = std::make_shared<block_state>(
+   std::optional<digests_t> action_receipt_digests;
+   auto bsp = std::make_shared<block_state_legacy>(
          std::move( pbhs ),
          std::move( block ),
          std::move( trx_metas ),
+         std::move( action_receipt_digests ),
          protocol_feature_set(),
          []( block_timestamp_type timestamp,
              const flat_set<digest_type>& cur_features,
@@ -76,6 +79,20 @@ auto create_test_block_state( deque<transaction_metadata_ptr> trx_metas ) {
    );
 
    return bsp;
+}
+
+using branch_legacy_t = fork_database_legacy_t::branch_t;
+
+template<class BRANCH_TYPE>
+void add_forked( unapplied_transaction_queue& queue, const BRANCH_TYPE& forked_branch ) {
+   // forked_branch is in reverse order
+   for( auto ritr = forked_branch.rbegin(), rend = forked_branch.rend(); ritr != rend; ++ritr ) {
+      const auto& bsptr = *ritr;
+      for( auto itr = bsptr->trxs_metas().begin(), end = bsptr->trxs_metas().end(); itr != end; ++itr ) {
+         const auto& trx = *itr;
+         queue.add_forked(trx);
+      }
+   }
 }
 
 // given a current itr make sure expected number of items are iterated over
@@ -93,7 +110,7 @@ BOOST_AUTO_TEST_CASE( unapplied_transaction_queue_test ) try {
 
    unapplied_transaction_queue q;
    BOOST_CHECK( q.empty() );
-   BOOST_CHECK( q.size() == 0 );
+   BOOST_CHECK( q.size() == 0u );
 
    auto trx1 = unique_trx_meta_data();
    auto trx2 = unique_trx_meta_data();
@@ -112,22 +129,23 @@ BOOST_AUTO_TEST_CASE( unapplied_transaction_queue_test ) try {
    // fifo aborted
    q.add_aborted( { trx1, trx2, trx3 } );
    q.add_aborted( { trx1, trx2, trx3 } ); // duplicates ignored
-   BOOST_CHECK( q.size() == 3 );
+   BOOST_CHECK( q.size() == 3u );
    BOOST_REQUIRE( next( q ) == trx1 );
-   BOOST_CHECK( q.size() == 2 );
+   BOOST_CHECK( q.size() == 2u );
    BOOST_REQUIRE( next( q ) == trx2 );
-   BOOST_CHECK( q.size() == 1 );
+   BOOST_CHECK( q.size() == 1u );
    BOOST_REQUIRE( next( q ) == trx3 );
-   BOOST_CHECK( q.size() == 0 );
+   BOOST_CHECK( q.size() == 0u );
    BOOST_REQUIRE( next( q ) == nullptr );
    BOOST_CHECK( q.empty() );
 
    // clear applied
    q.add_aborted( { trx1, trx2, trx3 } );
-   q.clear_applied( create_test_block_state( { trx1, trx3, trx4 } ) );
-   BOOST_CHECK( q.size() == 1 );
+   auto bs0 = create_test_block_state( { trx1, trx3, trx4 } );
+   q.clear_applied( bs0->block );
+   BOOST_CHECK( q.size() == 1u );
    BOOST_REQUIRE( next( q ) == trx2 );
-   BOOST_CHECK( q.size() == 0 );
+   BOOST_CHECK( q.size() == 0u );
    BOOST_REQUIRE( next( q ) == nullptr );
    BOOST_CHECK( q.empty() );
 
@@ -135,43 +153,43 @@ BOOST_AUTO_TEST_CASE( unapplied_transaction_queue_test ) try {
    auto bs1 = create_test_block_state( { trx1, trx2 } );
    auto bs2 = create_test_block_state( { trx3, trx4, trx5 } );
    auto bs3 = create_test_block_state( { trx6 } );
-   q.add_forked( { bs3, bs2, bs1, bs1 } ); // bs1 duplicate ignored
-   BOOST_CHECK( q.size() == 6 );
+   add_forked( q, branch_legacy_t{ bs3, bs2, bs1, bs1 } ); // bs1 duplicate ignored
+   BOOST_CHECK( q.size() == 6u );
    BOOST_REQUIRE( next( q ) == trx1 );
-   BOOST_CHECK( q.size() == 5 );
+   BOOST_CHECK( q.size() == 5u );
    BOOST_REQUIRE( next( q ) == trx2 );
-   BOOST_CHECK( q.size() == 4 );
+   BOOST_CHECK( q.size() == 4u );
    BOOST_REQUIRE_EQUAL( next( q ), trx3 );
-   BOOST_CHECK( q.size() == 3 );
+   BOOST_CHECK( q.size() == 3u );
    BOOST_REQUIRE( next( q ) == trx4 );
-   BOOST_CHECK( q.size() == 2 );
+   BOOST_CHECK( q.size() == 2u );
    BOOST_REQUIRE( next( q ) == trx5 );
-   BOOST_CHECK( q.size() == 1 );
+   BOOST_CHECK( q.size() == 1u );
    BOOST_REQUIRE( next( q ) == trx6 );
-   BOOST_CHECK( q.size() == 0 );
+   BOOST_CHECK( q.size() == 0u );
    BOOST_REQUIRE( next( q ) == nullptr );
    BOOST_CHECK( q.empty() );
 
    // fifo forked
    auto bs4 = create_test_block_state( { trx7 } );
-   q.add_forked( { bs1 } );
-   q.add_forked( { bs3, bs2 } );
-   q.add_forked( { bs4 } );
-   BOOST_CHECK( q.size() == 7 );
+   add_forked( q, branch_legacy_t{ bs1 } );
+   add_forked( q, branch_legacy_t{ bs3, bs2 } );
+   add_forked( q, branch_legacy_t{ bs4 } );
+   BOOST_CHECK( q.size() == 7u );
    BOOST_REQUIRE( next( q ) == trx1 );
-   BOOST_CHECK( q.size() == 6 );
+   BOOST_CHECK( q.size() == 6u );
    BOOST_REQUIRE( next( q ) == trx2 );
-   BOOST_CHECK( q.size() == 5 );
+   BOOST_CHECK( q.size() == 5u );
    BOOST_REQUIRE_EQUAL( next( q ), trx3 );
-   BOOST_CHECK( q.size() == 4 );
+   BOOST_CHECK( q.size() == 4u );
    BOOST_REQUIRE( next( q ) == trx4 );
-   BOOST_CHECK( q.size() == 3 );
+   BOOST_CHECK( q.size() == 3u );
    BOOST_REQUIRE( next( q ) == trx5 );
-   BOOST_CHECK( q.size() == 2 );
+   BOOST_CHECK( q.size() == 2u );
    BOOST_REQUIRE( next( q ) == trx6 );
-   BOOST_CHECK( q.size() == 1 );
+   BOOST_CHECK( q.size() == 1u );
    BOOST_REQUIRE( next( q ) == trx7 );
-   BOOST_CHECK( q.size() == 0 );
+   BOOST_CHECK( q.size() == 0u );
    BOOST_REQUIRE( next( q ) == nullptr );
    BOOST_CHECK( q.empty() );
 
@@ -188,92 +206,92 @@ BOOST_AUTO_TEST_CASE( unapplied_transaction_queue_test ) try {
    // fifo forked, multi forks
    auto bs5 = create_test_block_state( { trx11, trx12, trx13 } );
    auto bs6 = create_test_block_state( { trx11, trx15 } );
-   q.add_forked( { bs3, bs2, bs1 } );
-   q.add_forked( { bs4 } );
-   q.add_forked( { bs3, bs2 } ); // dups ignored
-   q.add_forked( { bs6, bs5 } );
-   BOOST_CHECK_EQUAL( q.size(), 11 );
+   add_forked( q, branch_legacy_t{ bs3, bs2, bs1 } );
+   add_forked( q, branch_legacy_t{ bs4 } );
+   add_forked( q, branch_legacy_t{ bs3, bs2 } ); // dups ignored
+   add_forked( q, branch_legacy_t{ bs6, bs5 } );
+   BOOST_CHECK_EQUAL( q.size(), 11u );
    BOOST_REQUIRE( next( q ) == trx1 );
-   BOOST_CHECK( q.size() == 10 );
+   BOOST_CHECK( q.size() == 10u );
    BOOST_REQUIRE( next( q ) == trx2 );
-   BOOST_CHECK( q.size() == 9 );
+   BOOST_CHECK( q.size() == 9u );
    BOOST_REQUIRE_EQUAL( next( q ), trx3 );
-   BOOST_CHECK( q.size() == 8 );
+   BOOST_CHECK( q.size() == 8u );
    BOOST_REQUIRE( next( q ) == trx4 );
-   BOOST_CHECK( q.size() == 7 );
+   BOOST_CHECK( q.size() == 7u );
    BOOST_REQUIRE( next( q ) == trx5 );
-   BOOST_CHECK( q.size() == 6 );
+   BOOST_CHECK( q.size() == 6u );
    BOOST_REQUIRE( next( q ) == trx6 );
-   BOOST_CHECK( q.size() == 5 );
+   BOOST_CHECK( q.size() == 5u );
    BOOST_REQUIRE( next( q ) == trx7 );
-   BOOST_CHECK( q.size() == 4 );
+   BOOST_CHECK( q.size() == 4u );
    BOOST_REQUIRE_EQUAL( next( q ), trx11 );
-   BOOST_CHECK( q.size() == 3 );
+   BOOST_CHECK( q.size() == 3u );
    BOOST_REQUIRE( next( q ) == trx12 );
-   BOOST_CHECK( q.size() == 2 );
+   BOOST_CHECK( q.size() == 2u );
    BOOST_REQUIRE( next( q ) == trx13 );
-   BOOST_CHECK( q.size() == 1 );
+   BOOST_CHECK( q.size() == 1u );
    BOOST_REQUIRE( next( q ) == trx15 );
-   BOOST_CHECK( q.size() == 0 );
+   BOOST_CHECK( q.size() == 0u );
    BOOST_REQUIRE( next( q ) == nullptr );
    BOOST_CHECK( q.empty() );
 
    // altogether, order fifo: forked, aborted
-   q.add_forked( { bs3, bs2, bs1 } );
+   add_forked( q, branch_legacy_t{ bs3, bs2, bs1 } );
    q.add_aborted( { trx9, trx14 } );
    q.add_aborted( { trx18, trx19 } );
-   q.add_forked( { bs6, bs5, bs4 } );
+   add_forked( q, branch_legacy_t{ bs6, bs5, bs4 } );
    // verify order
    verify_order( q, q.begin(), 15 );
    // verify type order
-   BOOST_CHECK( q.size() == 15 );
+   BOOST_CHECK( q.size() == 15u );
    verify_order( q, q.lower_bound(trx1->id()), 15 );
    BOOST_REQUIRE( next( q ) == trx1 );
-   BOOST_CHECK( q.size() == 14 );
+   BOOST_CHECK( q.size() == 14u );
    verify_order( q, q.lower_bound(trx2->id()), 14 );
    BOOST_REQUIRE( next( q ) == trx2 );
-   BOOST_CHECK( q.size() == 13 );
+   BOOST_CHECK( q.size() == 13u );
    verify_order( q, q.lower_bound(trx3->id()), 13 );
    verify_order( q, q.lower_bound(trx15->id()), 5 );
    BOOST_REQUIRE_EQUAL( next( q ), trx3 );
-   BOOST_CHECK( q.size() == 12 );
+   BOOST_CHECK( q.size() == 12u );
    verify_order( q, q.lower_bound(trx4->id()), 12 );
    BOOST_REQUIRE( next( q ) == trx4 );
-   BOOST_CHECK( q.size() == 11 );
+   BOOST_CHECK( q.size() == 11u );
    verify_order( q, q.lower_bound(trx5->id()), 11 );
    BOOST_REQUIRE( next( q ) == trx5 );
-   BOOST_CHECK( q.size() == 10 );
+   BOOST_CHECK( q.size() == 10u );
    verify_order( q, q.lower_bound(trx6->id()), 10 );
    verify_order( q, q.lower_bound(trx15->id()), 5 );
    BOOST_REQUIRE( next( q ) == trx6 );
-   BOOST_CHECK( q.size() == 9 );
+   BOOST_CHECK( q.size() == 9u );
    verify_order( q, q.lower_bound(trx7->id()), 9 );
    BOOST_REQUIRE( next( q ) == trx7 );
-   BOOST_CHECK( q.size() == 8 );
+   BOOST_CHECK( q.size() == 8u );
    verify_order( q, q.lower_bound(trx11->id()), 8 );
    BOOST_REQUIRE( next( q ) == trx11 );
-   BOOST_CHECK( q.size() == 7 );
+   BOOST_CHECK( q.size() == 7u );
    verify_order( q, q.lower_bound(trx12->id()), 7 );
    BOOST_REQUIRE_EQUAL( next( q ), trx12 );
-   BOOST_CHECK( q.size() == 6 );
+   BOOST_CHECK( q.size() == 6u );
    verify_order( q, q.lower_bound(trx13->id()), 6 );
    BOOST_REQUIRE( next( q ) == trx13 );
-   BOOST_CHECK( q.size() == 5 );
+   BOOST_CHECK( q.size() == 5u );
    verify_order( q, q.lower_bound(trx15->id()), 5 );
    BOOST_REQUIRE( next( q ) == trx15 );
-   BOOST_CHECK( q.size() == 4 );
+   BOOST_CHECK( q.size() == 4u );
    verify_order( q, q.lower_bound(trx9->id()), 4 );
    BOOST_REQUIRE( next( q ) == trx9 );
-   BOOST_CHECK( q.size() == 3 );
+   BOOST_CHECK( q.size() == 3u );
    verify_order( q, q.lower_bound(trx14->id()), 3 );
    BOOST_REQUIRE( next( q ) == trx14 );
-   BOOST_CHECK( q.size() == 2 );
+   BOOST_CHECK( q.size() == 2u );
    verify_order( q, q.lower_bound(trx18->id()), 2 );
    BOOST_REQUIRE( next( q ) == trx18 );
-   BOOST_CHECK( q.size() == 1 );
+   BOOST_CHECK( q.size() == 1u );
    verify_order( q, q.lower_bound(trx19->id()), 1 );
    BOOST_REQUIRE( next( q ) == trx19 );
-   BOOST_CHECK( q.size() == 0 );
+   BOOST_CHECK( q.size() == 0u );
    verify_order( q, q.lower_bound(trx19->id()), 0 );
    BOOST_REQUIRE( next( q ) == nullptr );
    BOOST_CHECK( q.empty() );
@@ -284,15 +302,15 @@ BOOST_AUTO_TEST_CASE( unapplied_transaction_queue_test ) try {
    auto trx23 = unique_trx_meta_data( fc::time_point::now() + fc::seconds( 120 ) );
    q.add_aborted( { trx20, trx22 } );
    q.clear_expired( fc::time_point::now(), [](){ return false; }, [](auto, auto){} );
-   BOOST_CHECK( q.size() == 1 );
+   BOOST_CHECK( q.size() == 1u );
    BOOST_REQUIRE( next( q ) == trx22 );
    BOOST_CHECK( q.empty() );
 
-   q.add_forked( { bs3, bs2, bs1 } );
+   add_forked( q, branch_legacy_t{ bs3, bs2, bs1 } );
    q.add_aborted( { trx9, trx11 } );
    q.clear();
    BOOST_CHECK( q.empty() );
-   BOOST_CHECK( q.size() == 0 );
+   BOOST_CHECK( q.size() == 0u );
    BOOST_REQUIRE( next( q ) == nullptr );
 
 } FC_LOG_AND_RETHROW() /// unapplied_transaction_queue_test
@@ -302,7 +320,7 @@ BOOST_AUTO_TEST_CASE( unapplied_transaction_queue_erase_add ) try {
 
    unapplied_transaction_queue q;
    BOOST_CHECK( q.empty() );
-   BOOST_CHECK( q.size() == 0 );
+   BOOST_CHECK( q.size() == 0u );
 
    auto trx1 = unique_trx_meta_data();
    auto trx2 = unique_trx_meta_data();
@@ -340,7 +358,7 @@ BOOST_AUTO_TEST_CASE( unapplied_transaction_queue_erase_add ) try {
       --count;
    }
 
-   BOOST_CHECK( q.size() == 6 );
+   BOOST_CHECK( q.size() == 6u );
    BOOST_REQUIRE( next( q ) == trx1 );
    BOOST_REQUIRE( next( q ) == trx2 );
    BOOST_REQUIRE( next( q ) == trx3 );
@@ -378,7 +396,7 @@ BOOST_AUTO_TEST_CASE( unapplied_transaction_queue_incoming_count ) try {
 
    unapplied_transaction_queue q;
    BOOST_CHECK( q.empty() );
-   BOOST_CHECK( q.size() == 0 );
+   BOOST_CHECK( q.size() == 0u );
 
    auto trx1 = unique_trx_meta_data();
    auto trx2 = unique_trx_meta_data();

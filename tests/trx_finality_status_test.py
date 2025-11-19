@@ -28,24 +28,20 @@ Print=Utils.Print
 errorExit=Utils.errorExit
 
 appArgs=AppArgs()
-args = TestHelper.parse_args({"-n", "--dump-error-details","--keep-logs","-v","--leave-running","--clean-run","--unshared"})
+args = TestHelper.parse_args({"-n","--activate-if","--dump-error-details","--keep-logs","-v","--leave-running","--unshared"})
 Utils.Debug=args.v
 pnodes=3
 totalNodes=args.n
 if totalNodes<=pnodes+2:
     totalNodes=pnodes+2
-cluster=Cluster(walletd=True,unshared=args.unshared)
+cluster=Cluster(unshared=args.unshared, keepRunning=args.leave_running, keepLogs=args.keep_logs)
+activateIF=args.activate_if
 dumpErrorDetails=args.dump_error_details
-keepLogs=args.keep_logs
-dontKill=args.leave_running
 prodCount=1
-killAll=args.clean_run
 walletPort=TestHelper.DEFAULT_WALLET_PORT
 
 walletMgr=WalletMgr(True, port=walletPort)
 testSuccessful=False
-killEosInstances=not dontKill
-killWallet=not dontKill
 
 WalletdName=Utils.EosWalletName
 ClientName="cleos"
@@ -57,15 +53,13 @@ try:
     TestHelper.printSystemInfo("BEGIN")
     cluster.setWalletMgr(walletMgr)
 
-    cluster.killall(allInstances=killAll)
-    cluster.cleanup()
     Print("Stand up cluster")
     successDuration = 60
     failure_duration = 40
     extraNodeosArgs=" --transaction-finality-status-max-storage-size-gb 1 " + \
                    f"--transaction-finality-status-success-duration-sec {successDuration} --transaction-finality-status-failure-duration-sec {failure_duration}"
     extraNodeosArgs+=" --http-max-response-time-ms 990000"
-    if cluster.launch(prodCount=prodCount, onlyBios=False, pnodes=pnodes, totalNodes=totalNodes, totalProducers=pnodes*prodCount,
+    if cluster.launch(prodCount=prodCount, onlyBios=False, pnodes=pnodes, totalNodes=totalNodes, totalProducers=pnodes*prodCount, activateIF=activateIF,
                       topo="line", extraNodeosArgs=extraNodeosArgs) is False:
         Utils.errorExit("Failed to stand up eos cluster.")
 
@@ -177,7 +171,7 @@ try:
 
     status.append(testNode.getTransactionStatus(transId))
     state = getState(status[1])
-    assert state == inBlockState, f"ERROR: getTransactionStatus never returned a \"{inBlockState}\" state"
+    assert state == inBlockState or state == irreversibleState, f"ERROR: getTransactionStatus never returned a \"{inBlockState}\" state or \"{irreversibleState}\""
 
     validateTrxState(status[1], present=True)
 
@@ -198,14 +192,15 @@ try:
         f"\n\nfinal status: {json.dumps(retStatus, indent=1)}"
     validate(retStatus)
 
+    # The transaction status db is purged on timeouts when blocks are processed, leeway allows small delay in blocks
     leeway=4
-    assert testNode.waitForBlock(blockNum=startingBlockNum+(successDuration*2),timeout=successDuration+leeway)
+    assert testNode.waitForBlock(blockNum=startingBlockNum+(successDuration*2)+leeway,timeout=successDuration+leeway)
 
     recentBlockNum=testNode.getBlockNum()
     retStatus=testNode.getTransactionStatus(transId)
     state = getState(retStatus)
     assert state == unknownState, \
-        f"ERROR: Calling getTransactionStatus after the success_duration should have resulted in an \"{irreversibleState}\" state.\nstatus: {json.dumps(retStatus, indent=1)}"
+        f"ERROR: Calling getTransactionStatus after the success_duration should have resulted in an \"{unknownState}\" state.\nstatus: {json.dumps(retStatus, indent=1)}"
     validateTrxState(retStatus, present=False)
     validate(retStatus, knownTrx=False)
     assert recentBlockNum <= retStatus["head_number"], \
@@ -214,7 +209,7 @@ try:
     testSuccessful=True
 
 finally:
-    TestHelper.shutdown(cluster, walletMgr, testSuccessful=testSuccessful, killEosInstances=killEosInstances, killWallet=killWallet, keepLogs=keepLogs, cleanRun=killAll, dumpErrorDetails=dumpErrorDetails)
+    TestHelper.shutdown(cluster, walletMgr, testSuccessful=testSuccessful, dumpErrorDetails=dumpErrorDetails)
 
 exitCode = 0 if testSuccessful else 1
 exit(exitCode)

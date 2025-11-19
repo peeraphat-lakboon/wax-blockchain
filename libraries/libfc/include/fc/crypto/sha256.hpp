@@ -1,41 +1,46 @@
 #pragma once
+#include <span>
+#include <compare>
 #include <fc/fwd.hpp>
 #include <fc/string.hpp>
 #include <fc/platform_independence.hpp>
+#include <fc/crypto/packhash.hpp>
 #include <fc/io/raw_fwd.hpp>
 #include <boost/functional/hash.hpp>
 
 namespace fc
 {
 
-class sha256 
+class sha256 : public add_packhash_to_hash<sha256>
 {
   public:
     sha256();
-    explicit sha256( const string& hex_str );
+    explicit sha256( const std::string& hex_str );
     explicit sha256( const char *data, size_t size );
 
-    string str()const;
-    operator string()const;
+    std::string str()const;
+    operator std::string()const;
 
     const char* data()const;
     char*       data();
     size_t      data_size() const { return 256 / 8; }
+
+    std::span<const uint8_t> to_uint8_span() const {
+       return {reinterpret_cast<const uint8_t*>(data()),  reinterpret_cast<const uint8_t*>(data()) + data_size()};
+    }
 
     bool empty()const {
        return (_hash[0] | _hash[1] | _hash[2] | _hash[3]) == 0;
     }
 
     static sha256 hash( const char* d, uint32_t dlen );
-    static sha256 hash( const string& );
+    static sha256 hash( const std::string& );
     static sha256 hash( const sha256& );
 
     template<typename T>
     static sha256 hash( const T& t ) 
     { 
-      sha256::encoder e; 
-      fc::raw::pack(e,t);
-      return e.result(); 
+      return packhash(t);
     } 
 
     class encoder 
@@ -67,12 +72,10 @@ class sha256
     }
     friend sha256 operator << ( const sha256& h1, uint32_t i       );
     friend sha256 operator >> ( const sha256& h1, uint32_t i       );
-    friend bool   operator == ( const sha256& h1, const sha256& h2 );
-    friend bool   operator != ( const sha256& h1, const sha256& h2 );
     friend sha256 operator ^  ( const sha256& h1, const sha256& h2 );
-    friend bool   operator >= ( const sha256& h1, const sha256& h2 );
-    friend bool   operator >  ( const sha256& h1, const sha256& h2 ); 
-    friend bool   operator <  ( const sha256& h1, const sha256& h2 ); 
+
+    friend bool operator == ( const sha256& h1, const sha256& h2 );
+    friend std::strong_ordering operator <=> ( const sha256& h1, const sha256& h2 );
 
     uint32_t pop_count()const
     {
@@ -125,6 +128,11 @@ namespace std
        }
     };
 
+    inline std::ostream& operator<<(std::ostream& os, const fc::sha256& r) {
+       os << "sha256(" << r.str() << ")";
+       return os;
+    }
+
 }
 
 namespace boost
@@ -138,5 +146,12 @@ namespace boost
        }
     };
 }
+
+namespace fc {
+   inline size_t hash_value(const fc::sha256& s) {
+      return boost::hash<fc::sha256>()(s);
+   }
+}
+
 #include <fc/reflect/reflect.hpp>
 FC_REFLECT_TYPENAME( fc::sha256 )

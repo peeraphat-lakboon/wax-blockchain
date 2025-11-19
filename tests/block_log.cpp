@@ -36,16 +36,16 @@ struct block_log_fixture {
       }
       else {
          eosio::chain::genesis_state gs;
-         log->reset(gs, std::make_shared<eosio::chain::signed_block>());
+         log->reset(gs, eosio::chain::signed_block::create_signed_block(eosio::chain::signed_block::create_mutable_block({})));
 
          //in this case it's not really empty since the "genesis block" is present. These tests only
          // work because the default ctor of a block_header (used above) has previous 0'ed out which
          // means its block num is 1.
          check_n_bounce([&]() {
-            BOOST_REQUIRE_EQUAL(log->first_block_num(), 1);
-            BOOST_REQUIRE_EQUAL(log->head()->block_num(), 1);
+            BOOST_REQUIRE_EQUAL(log->first_block_num(), 1u);
+            BOOST_REQUIRE_EQUAL(log->head()->block_num(), 1u);
             if(enable_read)
-               BOOST_REQUIRE_EQUAL(log->read_block_by_num(1)->block_num(), 1);
+               BOOST_REQUIRE_EQUAL(log->read_block_by_num(1)->block_num(), 1u);
          });
       }
    }
@@ -54,11 +54,12 @@ struct block_log_fixture {
       std::vector<char> a;
       a.assign(size, fillchar);
 
-      eosio::chain::signed_block_ptr p = std::make_shared<eosio::chain::signed_block>();
+      auto p = eosio::chain::signed_block::create_mutable_block({});
       p->previous._hash[0] = fc::endian_reverse_u32(index-1);
       p->header_extensions.push_back(std::make_pair<uint16_t, std::vector<char>>(0, std::vector<char>(a)));
 
-      log->append(p, p->calculate_id(), fc::raw::pack(*p));
+      auto sp = eosio::chain::signed_block::create_signed_block(std::move(p));
+      log->append(sp, sp->calculate_id(), sp->packed_signed_block());
 
       if(index + 1 > written_data.size())
          written_data.resize(index + 1);
@@ -67,7 +68,8 @@ struct block_log_fixture {
 
    void check_range_present(uint32_t first, uint32_t last) {
       BOOST_REQUIRE_EQUAL(log->first_block_num(), first);
-      BOOST_REQUIRE_EQUAL(eosio::chain::block_header::num_from_id(log->head_id()), last);
+      BOOST_REQUIRE(log->head_id());
+      BOOST_REQUIRE_EQUAL(eosio::chain::block_header::num_from_id(*log->head_id()), last);
       if(enable_read) {
          for(auto i = first; i <= last; i++) {
             std::vector<char> buff;
@@ -130,10 +132,8 @@ private:
 };
 
 static size_t payload_size() {
-   fc::temp_file tf;
-   fc::cfile cf;
-   cf.set_file_path(tf.path());
-   cf.open("ab");
+   fc::temp_cfile tf;
+   auto& cf = tf.file();
    return cf.filesystem_block_size()*2 + cf.filesystem_block_size()/2;
 }
 
@@ -588,7 +588,7 @@ BOOST_DATA_TEST_CASE(no_block_log_basic_nongenesis, bdata::xrange(2) * bdata::xr
 void no_block_log_public_functions_test( block_log_fixture& t) {
    BOOST_REQUIRE_NO_THROW(t.log->flush());
    BOOST_REQUIRE(t.log->read_block_by_num(1) == nullptr);
-   BOOST_REQUIRE(t.log->read_block_id_by_num(1) == eosio::chain::block_id_type{});
+   BOOST_REQUIRE(!t.log->read_block_id_by_num(1));
    BOOST_REQUIRE(t.log->get_block_pos(1) == eosio::chain::block_log::npos);
    BOOST_REQUIRE(t.log->read_head() == nullptr);
 }
@@ -642,6 +642,28 @@ BOOST_DATA_TEST_CASE(empty_prune_to_partitioned_transitions, bdata::xrange(1, 11
    t.check_not_present(expected_smallest_block_num-1);
 
 
+}  FC_LOG_AND_RETHROW() }
+
+//This test adds "a lot" more blocks to the log before transitioning from flat to pruned.
+BOOST_DATA_TEST_CASE(nonprune_to_prune_on_start, bdata::make({1, 1500}) * bdata::make({10, 50}), starting_block, prune_blocks)  { try {
+   //start non pruned
+   block_log_fixture t(true, true, false, std::optional<uint32_t>());
+   t.startup(starting_block);
+
+   const unsigned num_blocks_to_add = prune_blocks*3;
+   unsigned next_block = starting_block == 1 ? 2 : starting_block;
+   for(auto i = 0; i < prune_blocks*3; ++i)
+      t.add(next_block++, payload_size(), 'z');
+   t.check_n_bounce([&]() {});
+
+   //now switch over to pruned mode
+   t.prune_blocks = prune_blocks;
+   t.check_n_bounce([&]() {});
+
+   if(starting_block == 1)
+      t.check_range_present(num_blocks_to_add-prune_blocks+2, next_block-1);
+   else
+      t.check_range_present(starting_block+num_blocks_to_add-prune_blocks, next_block-1);
 }  FC_LOG_AND_RETHROW() }
 
 BOOST_AUTO_TEST_SUITE_END()

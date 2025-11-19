@@ -28,13 +28,16 @@ class eosvmoc_instantiated_module : public wasm_instantiated_module_interface {
       bool is_main_thread() { return _main_thread_id == std::this_thread::get_id(); };
 
       void apply(apply_context& context) override {
-         const code_descriptor* const cd = _eosvmoc_runtime.cc.get_descriptor_for_code_sync(_code_hash, _vm_version, context.control.is_write_window());
+         eosio::chain::eosvmoc::code_cache_sync::mode m;
+         m.whitelisted = context.is_eos_vm_oc_whitelisted();
+         m.write_window = context.control.is_write_window();
+         const code_descriptor* const cd = _eosvmoc_runtime.cc.get_descriptor_for_code_sync(m, context.get_receiver(), _code_hash, _vm_version);
          EOS_ASSERT(cd, wasm_execution_error, "EOS VM OC instantiation failed");
 
          if ( is_main_thread() )
             _eosvmoc_runtime.exec.execute(*cd, _eosvmoc_runtime.mem, context);
          else
-            _eosvmoc_runtime.exec_thread_local->execute(*cd, _eosvmoc_runtime.mem_thread_local, context);
+            _eosvmoc_runtime.exec_thread_local->execute(*cd, *_eosvmoc_runtime.mem_thread_local, context);
       }
 
       const digest_type              _code_hash;
@@ -43,7 +46,7 @@ class eosvmoc_instantiated_module : public wasm_instantiated_module_interface {
       std::thread::id                _main_thread_id;
 };
 
-eosvmoc_runtime::eosvmoc_runtime(const boost::filesystem::path data_dir, const eosvmoc::config& eosvmoc_config, const chainbase::database& db)
+eosvmoc_runtime::eosvmoc_runtime(const std::filesystem::path data_dir, const eosvmoc::config& eosvmoc_config, const chainbase::database& db)
    : cc(data_dir, eosvmoc_config, db), exec(cc), mem(wasm_constraints::maximum_linear_memory/wasm_constraints::wasm_page_size) {
 }
 
@@ -57,9 +60,10 @@ std::unique_ptr<wasm_instantiated_module_interface> eosvmoc_runtime::instantiate
 
 void eosvmoc_runtime::init_thread_local_data() {
    exec_thread_local = std::make_unique<eosvmoc::executor>(cc);
+   mem_thread_local  = std::make_unique<eosvmoc::memory>(eosvmoc::memory::sliced_pages_for_ro_thread);
 }
 
-thread_local std::unique_ptr<eosvmoc::executor> eosvmoc_runtime::exec_thread_local {};
-thread_local eosvmoc::memory eosvmoc_runtime::mem_thread_local{ wasm_constraints::maximum_linear_memory/wasm_constraints::wasm_page_size };
+thread_local std::unique_ptr<eosvmoc::executor> eosvmoc_runtime::exec_thread_local{};
+thread_local std::unique_ptr<eosvmoc::memory> eosvmoc_runtime::mem_thread_local{};
 
 }}}}

@@ -1,4 +1,5 @@
 #pragma once
+#include <boost/unordered/unordered_flat_map.hpp>
 #include <eosio/chain/controller.hpp>
 #include <eosio/chain/transaction.hpp>
 #include <eosio/chain/transaction_context.hpp>
@@ -14,6 +15,7 @@ namespace chainbase { class database; }
 namespace eosio { namespace chain {
 
 class controller;
+class account_metadata_object;
 
 class apply_context {
    private:
@@ -91,7 +93,7 @@ class apply_context {
             map<table_id_object::id_type, pair<const table_id_object*, int>> _table_cache;
             vector<const table_id_object*>                  _end_iterator_to_table;
             vector<const T*>                                _iterator_to_object;
-            map<const T*,int>                               _object_to_iterator;
+            boost::unordered_flat_map<const T*,int>         _object_to_iterator;
 
             /// Precondition: std::numeric_limits<int>::min() < ei < -1
             /// Iterator of -1 is reserved for invalid iterators (i.e. when the appropriate table has not yet been created).
@@ -597,6 +599,10 @@ class apply_context {
       const action& get_action()const { return *act; }
 
       action_name get_sender() const;
+
+      bool is_applying_block() const { return trx_context.explicit_billed_cpu_time; }
+      bool is_eos_vm_oc_whitelisted() const;
+      bool should_use_eos_vm_oc()const;
 
    /// Fields:
    public:

@@ -2,11 +2,10 @@
 
 #include <eosio/chain/application.hpp>
 #include <eosio/chain/exceptions.hpp>
-#include <eosio/chain/plugin_metrics.hpp>
+#include <eosio/http_plugin/api_category.hpp>
 #include <fc/exception/exception.hpp>
 #include <fc/reflect/reflect.hpp>
 #include <fc/io/json.hpp>
-
 namespace eosio {
    using namespace appbase;
 
@@ -14,9 +13,9 @@ namespace eosio {
     * @brief A callback function provided to a URL handler to
     * allow it to specify the HTTP response code and body
     *
-    * Arguments: response_code, deadline, response_body
+    * Arguments: response_code, response_body
     */
-   using url_response_callback = std::function<void(int,fc::time_point,std::optional<fc::variant>)>;
+   using url_response_callback = std::function<void(int,std::optional<fc::variant>)>;
 
    /**
     * @brief Callback type for a URL handler
@@ -37,7 +36,13 @@ namespace eosio {
     * a handler. The URL is the path on the web server that triggers the
     * call, and the handler is the function which implements the API call
     */
-   using api_description = std::map<string, url_handler>;
+   struct api_entry {
+      string path;
+      api_category category;
+      url_handler handler;
+   };
+
+   using api_description = std::vector<api_entry>;
 
    enum class http_content_type {
       json = 1,
@@ -54,6 +59,7 @@ namespace eosio {
       uint16_t default_http_port{0};
       //If set, a Server header will be added to the HTTP reply with this value
       string server_header;
+      bool   support_categories = true;
    };
 
    /**
@@ -62,11 +68,11 @@ namespace eosio {
     *  URL that was requested and a callback method that should be
     *  called with the response code and body.
     *
-    *  The handler will be called from the appbase application io_service
+    *  The handler will be called from the appbase application io_context
     *  thread.  The callback can be called from any thread and will
     *  automatically propagate the call to the http thread.
     *
-    *  The HTTP service will run in its own thread with its own io_service to
+    *  The HTTP service will run in its own thread with its own io_context to
     *  make sure that HTTP request processing does not interfer with other
     *  plugins.
     */
@@ -81,6 +87,7 @@ namespace eosio {
         static std::string get_server_header();
 
         APPBASE_PLUGIN_REQUIRES()
+
         void set_program_options(options_description&, options_description& cfg) override;
 
         void plugin_initialize(const variables_map& options);
@@ -88,16 +95,16 @@ namespace eosio {
         void plugin_shutdown();
         void handle_sighup() override;
 
-        void add_handler(const string& url, const url_handler&, appbase::exec_queue q, int priority = appbase::priority::medium_low, http_content_type content_type = http_content_type::json);
-        void add_api(const api_description& api, appbase::exec_queue q, int priority = appbase::priority::medium_low, http_content_type content_type = http_content_type::json) {
-           for (const auto& call : api)
-              add_handler(call.first, call.second, q, priority, content_type);
+        void add_handler(api_entry&& entry, appbase::exec_queue q, int priority = appbase::priority::medium_low, http_content_type content_type = http_content_type::json);
+        void add_api(api_description&& api, appbase::exec_queue q, int priority = appbase::priority::medium_low, http_content_type content_type = http_content_type::json) {
+           for (auto& call : api)
+              add_handler(std::move(call), q, priority, content_type);
         }
 
-        void add_async_handler(const string& url, const url_handler& handler, http_content_type content_type = http_content_type::json);
-        void add_async_api(const api_description& api, http_content_type content_type = http_content_type::json) {
-           for (const auto& call : api)
-              add_async_handler(call.first, call.second, content_type);
+        void add_async_handler(api_entry&& entry, http_content_type content_type = http_content_type::json);
+        void add_async_api(api_description&& api, http_content_type content_type = http_content_type::json) {
+           for (auto& call : api)
+              add_async_handler(std::move(call), content_type);
         }
 
         // standard exception handling for api handlers
@@ -105,8 +112,10 @@ namespace eosio {
 
         void post_http_thread_pool(std::function<void()> f);
 
-        bool is_on_loopback() const;
-        bool is_secure() const;
+        bool is_on_loopback(api_category category) const;
+
+        // returns true if `category` is enabled in http_plugin
+        bool is_enabled(api_category category) const;
 
         static bool verbose_errors();
 
@@ -114,15 +123,22 @@ namespace eosio {
            vector<string> apis;
         };
 
-        get_supported_apis_result get_supported_apis()const;
-
         /// @return the configured http-max-response-time-ms
         fc::microseconds get_max_response_time()const;
 
-        void register_metrics_listener(chain::plugin_interface::metrics_listener listener);
-
         size_t get_max_body_size()const;
 
+        struct metrics {
+           std::string target;
+        };
+
+        void register_update_metrics(std::function<void(metrics)>&& fun);
+
+        size_t requests_in_flight() const;
+
+        size_t bytes_in_flight() const;
+
+        std::atomic<bool>& listening();
    private:
         std::shared_ptr<class http_plugin_impl> my;
    };

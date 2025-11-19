@@ -7,6 +7,16 @@ static constexpr size_t max_message_size = 8192;
 static constexpr size_t max_num_fds = 4;
 
 std::tuple<bool, eosvmoc_message, std::vector<wrapped_fd>> read_message_with_fds(boost::asio::local::datagram_protocol::socket& s) {
+   // read_message_with_fds() is intended to be blocking, and sockets it is used with are never explicitly set to non-blocking mode.
+   // But when doing an async_wait() on an asio socket, asio will set the underlying file descriptor to non-blocking mode.
+   // It's not clear why, but in some cases after async_wait() indicates readiness, a recvmsg() on the socket can fail with
+   // EAGAIN if the file descriptor is still in non-blocking mode (as asio had set it to).
+   // Always set the file descriptor to blocking mode before performing the recvmsg()
+   boost::system::error_code ec;
+   s.native_non_blocking(false, ec);
+   if(ec)
+      wlog("Failed to set socket's native blocking mode");
+
    return read_message_with_fds(s.native_handle());
 }
 
@@ -61,11 +71,11 @@ std::tuple<bool, eosvmoc_message, std::vector<wrapped_fd>> read_message_with_fds
    return {true, message, std::move(fds)};
 }
 
-bool write_message_with_fds(boost::asio::local::datagram_protocol::socket& s, const eosvmoc_message& message, const std::vector<wrapped_fd>& fds) {
+bool write_message_with_fds(boost::asio::local::datagram_protocol::socket& s, const eosvmoc_message& message, std::span<wrapped_fd> fds) {
    return write_message_with_fds(s.native_handle(), message, fds);
 }
 
-bool write_message_with_fds(int fd_to_send_to, const eosvmoc_message& message, const std::vector<wrapped_fd>& fds) {
+bool write_message_with_fds(int fd_to_send_to, const eosvmoc_message& message, std::span<wrapped_fd> fds) {
    struct msghdr msg = {};
    struct cmsghdr* cmsg;
 

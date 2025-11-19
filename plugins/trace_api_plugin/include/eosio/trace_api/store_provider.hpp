@@ -5,7 +5,6 @@
 #include <mutex>
 #include <condition_variable>
 #include <fc/io/cfile.hpp>
-#include <boost/filesystem.hpp>
 #include <fc/variant.hpp>
 #include <eosio/trace_api/common.hpp>
 #include <eosio/trace_api/metadata_log.hpp>
@@ -13,7 +12,6 @@
 #include <eosio/trace_api/compressed_file.hpp>
 
 namespace eosio::trace_api {
-   using namespace boost::filesystem;
 
    class path_does_not_exist : public std::runtime_error {
    public:
@@ -68,7 +66,6 @@ namespace eosio::trace_api {
       const auto offset = file.tellp();
       file.write(data.data(), data.size());
       file.flush();
-      file.sync();
       return offset;
    }
 
@@ -100,7 +97,7 @@ namespace eosio::trace_api {
       };
 
       enum class open_state { read /*read from front to back*/, write /*write to end of file*/ };
-      slice_directory(const boost::filesystem::path& slice_dir, uint32_t width, std::optional<uint32_t> minimum_irreversible_history_blocks,
+      slice_directory(const std::filesystem::path& slice_dir, uint32_t width, std::optional<uint32_t> minimum_irreversible_history_blocks,
                       std::optional<uint32_t> minimum_uncompressed_irreversible_history_blocks, size_t compression_seek_point_stride);
 
       /**
@@ -205,6 +202,14 @@ namespace eosio::trace_api {
       bool find_trx_id_slice(uint32_t slice_number, open_state state, fc::cfile& trx_id_file, bool open_file = true) const;
 
       /**
+       * Traverses the trx id slice files in reverse order of block num, latest block num stride first
+       *
+       * Call callback with each already opened at beginning trx id slice file
+       * @param callback return false to stop iteration
+       */
+      void for_each_trx_id_slice(std::function<bool(fc::cfile&)> callback) const;
+
+      /**
        * set the LIB for maintenance
        * @param lib
        */
@@ -243,7 +248,7 @@ namespace eosio::trace_api {
       template<typename F>
       void process_irreversible_slice_range(uint32_t lib, uint32_t upper_bound_block, std::optional<uint32_t>& lower_bound_slice, F&& f);
 
-      const boost::filesystem::path _slice_dir;
+      const std::filesystem::path _slice_dir;
       const uint32_t _width;
       const std::optional<uint32_t> _minimum_irreversible_history_blocks;
       std::optional<uint32_t> _last_cleaned_up_slice;
@@ -265,7 +270,7 @@ namespace eosio::trace_api {
    public:
       using open_state = slice_directory::open_state;
 
-      store_provider(const boost::filesystem::path& slice_dir, uint32_t stride_width, std::optional<uint32_t> minimum_irreversible_history_blocks,
+      store_provider(const std::filesystem::path& slice_dir, uint32_t stride_width, std::optional<uint32_t> minimum_irreversible_history_blocks,
             std::optional<uint32_t> minimum_uncompressed_irreversible_history_blocks, size_t compression_seek_point_stride);
 
       template<typename BlockTrace>
@@ -281,7 +286,7 @@ namespace eosio::trace_api {
        */
       get_block_t get_block(uint32_t block_height, const yield_function& yield= {});
 
-      get_block_n get_trx_block_number(const chain::transaction_id_type& trx_id, std::optional<uint32_t> minimum_irreversible_history_blocks, const yield_function& yield= {});
+      get_block_n get_trx_block_number(const chain::transaction_id_type& trx_id, const yield_function& yield= {});
 
       void start_maintenance_thread( log_handler log ) {
          _slice_directory.start_maintenance_thread( std::move(log) );

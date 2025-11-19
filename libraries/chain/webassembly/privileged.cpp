@@ -1,9 +1,14 @@
+#include <eosio/chain/account_object.hpp>
 #include <eosio/chain/webassembly/interface.hpp>
 #include <eosio/chain/global_property_object.hpp>
 #include <eosio/chain/protocol_state_object.hpp>
 #include <eosio/chain/transaction_context.hpp>
 #include <eosio/chain/resource_limits.hpp>
 #include <eosio/chain/apply_context.hpp>
+#include <eosio/chain/finalizer_policy.hpp>
+#include <eosio/chain/finalizer_authority.hpp>
+
+#include <fc/io/datastream.hpp>
 
 #include <vector>
 #include <set>
@@ -39,7 +44,6 @@ namespace eosio { namespace chain { namespace webassembly {
    }
 
    int64_t set_proposed_producers_common( apply_context& context, vector<producer_authority> && producers, bool validate_keys ) {
-      EOS_ASSERT(producers.size() <= config::max_producers, wasm_execution_error, "Producer schedule exceeds the maximum producer count for this chain");
       EOS_ASSERT( producers.size() > 0
                   || !context.control.is_builtin_activated( builtin_protocol_feature_t::disallow_empty_producer_schedule ),
                   wasm_execution_error,
@@ -81,7 +85,7 @@ namespace eosio { namespace chain { namespace webassembly {
       }
       EOS_ASSERT( producers.size() == unique_producers.size(), wasm_execution_error, "duplicate producer name in producer schedule" );
 
-      return context.control.set_proposed_producers( std::move(producers) );
+      return context.control.set_proposed_producers( context.trx_context, std::move(producers) );
    }
 
    uint32_t interface::get_wasm_parameters_packed( span<char> packed_parameters, uint32_t max_version ) const {
@@ -94,7 +98,7 @@ namespace eosio { namespace chain { namespace webassembly {
          return s;
 
       if ( s <= packed_parameters.size() ) {
-         datastream<char*> ds( packed_parameters.data(), s );
+         fc::datastream<char*> ds( packed_parameters.data(), s );
          fc::raw::pack(ds, version);
          fc::raw::pack(ds, params);
       }
@@ -102,7 +106,7 @@ namespace eosio { namespace chain { namespace webassembly {
    }
    void interface::set_wasm_parameters_packed( span<const char> packed_parameters ) {
       EOS_ASSERT(!context.trx_context.is_read_only(), wasm_execution_error, "set_wasm_parameters_packed not allowed in a readonly transaction");
-      datastream<const char*> ds( packed_parameters.data(), packed_parameters.size() );
+      fc::datastream<const char*> ds( packed_parameters.data(), packed_parameters.size() );
       uint32_t version;
       chain::wasm_config cfg;
       fc::raw::unpack(ds, version);
@@ -117,7 +121,7 @@ namespace eosio { namespace chain { namespace webassembly {
    }
    int64_t interface::set_proposed_producers( legacy_span<const char> packed_producer_schedule) {
       EOS_ASSERT(!context.trx_context.is_read_only(), wasm_execution_error, "set_proposed_producers not allowed in a readonly transaction");
-      datastream<const char*> ds( packed_producer_schedule.data(), packed_producer_schedule.size() );
+      fc::datastream<const char*> ds( packed_producer_schedule.data(), packed_producer_schedule.size() );
       std::vector<producer_authority> producers;
       std::vector<legacy::producer_key> old_version;
       fc::raw::unpack(ds, old_version);
@@ -137,7 +141,7 @@ namespace eosio { namespace chain { namespace webassembly {
       if (packed_producer_format == 0) {
          return set_proposed_producers(std::move(packed_producer_schedule));
       } else if (packed_producer_format == 1) {
-         datastream<const char*> ds( packed_producer_schedule.data(), packed_producer_schedule.size() );
+         fc::datastream<const char*> ds( packed_producer_schedule.data(), packed_producer_schedule.size() );
          vector<producer_authority> producers;
 
          fc::raw::unpack(ds, producers);
@@ -147,6 +151,63 @@ namespace eosio { namespace chain { namespace webassembly {
       }
    }
 
+   // format for packed_finalizer_policy
+   struct finalizer_authority {
+      std::string              description;
+      uint64_t                 weight = 0; // weight that this finalizer's vote has for meeting fthreshold
+      std::vector<uint8_t>     public_key; // Affine little endian non-montgomery g1, cdt/abi_serializer has issues with std::array, size 96
+   };
+   struct finalizer_policy {
+      uint64_t                          threshold = 0;
+      std::vector<finalizer_authority>  finalizers;
+   };
+
+   void interface::set_finalizers(uint64_t packed_finalizer_format, span<const char> packed_finalizer_policy) {
+      EOS_ASSERT(!context.trx_context.is_read_only(), wasm_execution_error,
+                 "set_finalizers not allowed in a readonly transaction");
+      if (packed_finalizer_format != 0) {
+         EOS_THROW(wasm_execution_error, "Finalizer policy is in an unknown format!");
+      }
+
+      fc::datastream<const char*> ds( packed_finalizer_policy.data(), packed_finalizer_policy.size() );
+      finalizer_policy abi_finpol;
+      fc::raw::unpack(ds, abi_finpol);
+
+      std::vector<finalizer_authority>& finalizers = abi_finpol.finalizers;
+
+      EOS_ASSERT( finalizers.size() <= config::max_finalizers, wasm_execution_error,
+                  "Finalizer policy exceeds the maximum finalizer count for this chain" );
+      EOS_ASSERT( finalizers.size() > 0, wasm_execution_error, "Finalizers cannot be empty" );
+
+      std::set<fc::crypto::blslib::bls_public_key> unique_finalizer_keys;
+
+      uint64_t weight_sum = 0;
+
+      chain::finalizer_policy finpol;
+      finpol.threshold = abi_finpol.threshold;
+      for (auto& f: finalizers) {
+         EOS_ASSERT( f.description.size() <= config::max_finalizer_description_size, wasm_execution_error,
+                     "Finalizer description greater than ${s}", ("s", config::max_finalizer_description_size) );
+         EOS_ASSERT(std::numeric_limits<uint64_t>::max() - weight_sum >= f.weight, wasm_execution_error,
+                    "sum of weights causes uint64_t overflow");
+         weight_sum += f.weight;
+         EOS_ASSERT(f.public_key.size() == 96, wasm_execution_error, "Invalid bls public key length");
+         fc::crypto::blslib::bls_public_key pk(std::span<const uint8_t,96>(f.public_key.data(), 96));
+         EOS_ASSERT( unique_finalizer_keys.insert(pk).second, wasm_execution_error,
+                     "Duplicate public key: ${pk}", ("pk", pk.to_string()) );
+         finpol.finalizers.push_back(chain::finalizer_authority{.description = std::move(f.description),
+                                                                .weight = f.weight,
+                                                                .public_key{pk}});
+      }
+
+      EOS_ASSERT( weight_sum >= finpol.threshold && finpol.threshold > weight_sum / 2, wasm_execution_error,
+                  "Finalizer policy threshold (${t}) must be greater than half of the sum of the weights (${w}), "
+                  "and less than or equal to the sum of the weights",
+                  ("t", finpol.threshold)("w", weight_sum) );
+
+      context.trx_context.set_proposed_finalizers( std::move(finpol) );
+   }
+
    uint32_t interface::get_blockchain_parameters_packed( legacy_span<char> packed_blockchain_parameters ) const {
       auto& gpo = context.control.get_global_properties();
 
@@ -154,7 +215,7 @@ namespace eosio { namespace chain { namespace webassembly {
       if( packed_blockchain_parameters.size() == 0 ) return s;
 
       if ( s <= packed_blockchain_parameters.size() ) {
-         datastream<char*> ds( packed_blockchain_parameters.data(), s );
+         fc::datastream<char*> ds( packed_blockchain_parameters.data(), s );
          fc::raw::pack(ds, gpo.configuration.v0());
          return s;
       }
@@ -163,7 +224,7 @@ namespace eosio { namespace chain { namespace webassembly {
 
    void interface::set_blockchain_parameters_packed( legacy_span<const char> packed_blockchain_parameters ) {
       EOS_ASSERT(!context.trx_context.is_read_only(), wasm_execution_error, "set_blockchain_parameters_packed not allowed in a readonly transaction");
-      datastream<const char*> ds( packed_blockchain_parameters.data(), packed_blockchain_parameters.size() );
+      fc::datastream<const char*> ds( packed_blockchain_parameters.data(), packed_blockchain_parameters.size() );
       chain::chain_config_v0 cfg;
       fc::raw::unpack(ds, cfg);
       cfg.validate();
@@ -174,7 +235,7 @@ namespace eosio { namespace chain { namespace webassembly {
    }
    
    uint32_t interface::get_parameters_packed( span<const char> packed_parameter_ids, span<char> packed_parameters) const{
-      datastream<const char*> ds_ids( packed_parameter_ids.data(), packed_parameter_ids.size() );
+      fc::datastream<const char*> ds_ids( packed_parameter_ids.data(), packed_parameter_ids.size() );
 
       chain::chain_config cfg = context.control.get_global_properties().configuration;
       std::vector<fc::unsigned_int> ids;
@@ -188,14 +249,14 @@ namespace eosio { namespace chain { namespace webassembly {
                  chain::config_parse_error,
                  "get_parameters_packed: buffer size is smaller than ${size}", ("size", size));
       
-      datastream<char*> ds( packed_parameters.data(), size );
+      fc::datastream<char*> ds( packed_parameters.data(), size );
       fc::raw::pack( ds, config_range );
       return size;
    }
 
    void interface::set_parameters_packed( span<const char> packed_parameters ){
       EOS_ASSERT(!context.trx_context.is_read_only(), wasm_execution_error, "set_parameters_packed not allowed in a readonly transaction");
-      datastream<const char*> ds( packed_parameters.data(), packed_parameters.size() );
+      fc::datastream<const char*> ds( packed_parameters.data(), packed_parameters.size() );
 
       chain::chain_config cfg = context.control.get_global_properties().configuration;
       config_range config_range(cfg, {context.control});
@@ -221,3 +282,6 @@ namespace eosio { namespace chain { namespace webassembly {
       });
    }
 }}} // ns eosio::chain::webassembly
+
+FC_REFLECT(eosio::chain::webassembly::finalizer_authority, (description)(weight)(public_key));
+FC_REFLECT(eosio::chain::webassembly::finalizer_policy, (threshold)(finalizers));

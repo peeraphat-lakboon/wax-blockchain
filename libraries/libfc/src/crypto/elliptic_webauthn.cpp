@@ -1,6 +1,5 @@
 #include <fc/crypto/elliptic_webauthn.hpp>
 #include <fc/crypto/elliptic_r1.hpp>
-#include <fc/crypto/base58.hpp>
 #include <fc/crypto/openssl.hpp>
 
 #include <fc/fwd_impl.hpp>
@@ -225,7 +224,7 @@ public_key::public_key(const signature& c, const fc::sha256& digest, bool) {
 
    FC_ASSERT(handler.found_type == "webauthn.get", "webauthn signature type not an assertion");
 
-   std::string challenge_bytes = fc::base64url_decode(handler.found_challenge);
+   std::vector<char> challenge_bytes = fc::base64url_decode(handler.found_challenge);
    FC_ASSERT(fc::sha256(challenge_bytes.data(), challenge_bytes.size()) == digest, "Wrong webauthn challenge");
 
    char required_origin_scheme[] = "https://";

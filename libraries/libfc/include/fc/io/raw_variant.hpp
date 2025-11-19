@@ -28,7 +28,7 @@ namespace fc { namespace raw {
          {
             fc::raw::pack( s, v );
          }
-         virtual void handle( const string& v )const
+         virtual void handle( const std::string& v )const
          {
             fc::raw::pack( s, v );
          }
@@ -95,30 +95,30 @@ namespace fc { namespace raw {
          }
          case variant::string_type:
          {
-            fc::string val;
+            std::string val;
             raw::unpack(s,val);
-            v = fc::move(val);
+            v = std::move(val);
             return;
          }
          case variant::array_type:
          {
             variants val;
             raw::unpack(s,val);
-            v = fc::move(val);
+            v = std::move(val);
             return;
          }
          case variant::object_type:
          {
             variant_object val; 
             raw::unpack(s,val);
-            v = fc::move(val);
+            v = std::move(val);
             return;
          }
          case variant::blob_type:
          {
             blob val;
             raw::unpack(s,val);
-            v = fc::move(val);
+            v = std::move(val);
             return;
          }
          default:
@@ -147,13 +147,13 @@ namespace fc { namespace raw {
        mvo.reserve(vs.value);
        for( uint32_t i = 0; i < vs.value; ++i )
        {
-          fc::string key;
+          std::string key;
           fc::variant value;
           fc::raw::unpack(s,key);
           fc::raw::unpack(s,value);
-          mvo.set( fc::move(key), fc::move(value) );
+          mvo.set( std::move(key), std::move(value) );
        }
-       v = fc::move(mvo);
+       v = std::move(mvo);
     }
 
 } } // fc::raw

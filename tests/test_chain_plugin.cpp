@@ -10,15 +10,9 @@
 #include <eosio/chain/contract_table_objects.hpp>
 #include <eosio/chain/resource_limits.hpp>
 #include <eosio/chain/wast_to_wasm.hpp>
-#include <cstdlib>
-#include <fc/log/logger.hpp>
 #include <eosio/chain/exceptions.hpp>
-
-#ifdef NON_VALIDATING_TEST
-#define TESTER tester
-#else
-#define TESTER validating_tester
-#endif
+#include <fc/log/logger.hpp>
+#include <cstdlib>
 
 using namespace eosio;
 using namespace eosio::chain;
@@ -29,16 +23,15 @@ using namespace fc;
 
 using mvo = fc::mutable_variant_object;
 
-class chain_plugin_tester : public TESTER {
+class chain_plugin_tester : public validating_tester {
 public:
 
     action_result push_action( const account_name& signer, const action_name &name, const variant_object &data, bool auth = true ) {
          string action_type_name = abi_ser.get_action_type(name);
 
-         action act;
-         act.account = config::system_account_name;
-         act.name = name;
-         act.data = abi_ser.variant_to_binary( action_type_name, data, abi_serializer::create_yield_function(abi_serializer_max_time) );
+         action act({}, config::system_account_name, name,
+                    abi_ser.variant_to_binary(action_type_name, data,
+                                              abi_serializer::create_yield_function(abi_serializer_max_time)));
 
          return base_tester::push_action( std::move(act), (auth ? signer : signer == "bob111111111"_n ? "alice1111111"_n : "bob111111111"_n).to_uint64_t() );
     }
@@ -199,7 +192,7 @@ public:
                          "eosio.bpay"_n, "eosio.vpay"_n, "eosio.saving"_n, "eosio.names"_n, "eosio.rex"_n });
 
        set_code( "eosio.token"_n, test_contracts::eosio_token_wasm() );
-       set_abi( "eosio.token"_n, test_contracts::eosio_token_abi().data() );
+       set_abi( "eosio.token"_n, test_contracts::eosio_token_abi() );
 
        {
            const auto& accnt = control->db().get<account_object,by_name>( "eosio.token"_n );
@@ -213,7 +206,7 @@ public:
        BOOST_CHECK_EQUAL( core_from_string("1000000000.0000"), get_balance( name("eosio") ) );
 
        set_code( config::system_account_name, test_contracts::eosio_system_wasm() );
-       set_abi( config::system_account_name, test_contracts::eosio_system_abi().data() );
+       set_abi( config::system_account_name, test_contracts::eosio_system_abi() );
 
        base_tester::push_action(config::system_account_name, "init"_n,
                                 config::system_account_name,  mutable_variant_object()
@@ -232,8 +225,11 @@ public:
     read_only::get_account_results get_account_info(const account_name acct){
        auto account_object = control->get_account(acct);
        read_only::get_account_params params = { account_object.name };
-       chain_apis::read_only plugin(*(control.get()), {}, fc::microseconds::maximum(), fc::microseconds::maximum(), {}, {});
-       return plugin.get_account(params, fc::time_point::maximum());
+       std::optional<eosio::chain_apis::tracked_votes> _tracked_votes;
+       chain_apis::read_only plugin(*(control.get()), {}, {}, _tracked_votes, fc::microseconds::maximum(), fc::microseconds::maximum(), {});
+       auto res =   plugin.get_account(params, fc::time_point::maximum())();
+       BOOST_REQUIRE(!std::holds_alternative<fc::exception_ptr>(res));
+       return std::get<chain_apis::read_only::get_account_results>(std::move(res));
     }
 
     transaction_trace_ptr setup_producer_accounts( const std::vector<account_name>& accounts ) {
@@ -320,9 +316,11 @@ public:
                 BOOST_CHECK_EQUAL( success(), regproducer(p) );
             }
         }
-        produce_blocks( 250);
+        produce_block();
+        produce_block(fc::seconds(1000));
+        produce_block();
 
-        auto trace_auth = TESTER::push_action(config::system_account_name, updateauth::get_name(), config::system_account_name, mvo()
+        auto trace_auth = validating_tester::push_action(config::system_account_name, updateauth::get_name(), config::system_account_name, mvo()
                 ("account", name(config::system_account_name).to_string())
                 ("permission", name(config::active_name).to_string())
                 ("parent", name(config::owner_name).to_string())
@@ -346,10 +344,16 @@ public:
             )
             );
         }
-        produce_blocks( 250 );
+        produce_block();
+        produce_block(fc::seconds(1000));
+        auto b = produce_block();
+        auto index = b->timestamp.slot % config::producer_repetitions;
+        produce_blocks(config::producer_repetitions - index - 1); // until the last block of round 1
+        produce_blocks(config::producer_repetitions); // round 2
+        produce_block(); // round 3
 
-        auto producer_keys = control->head_block_state()->active_schedule.producers;
-        BOOST_CHECK_EQUAL( 21, producer_keys.size() );
+        auto producer_keys = control->active_producers().producers;
+        BOOST_CHECK_EQUAL( 21u, producer_keys.size() );
         BOOST_CHECK_EQUAL( name("defproducera"), producer_keys[0].producer_name );
 
         return producer_names;
@@ -370,9 +374,9 @@ BOOST_AUTO_TEST_SUITE(test_chain_plugin_tests)
 
 BOOST_FIXTURE_TEST_CASE(account_results_total_resources_test, chain_plugin_tester) { try {
 
-    produce_blocks(10);
+    produce_block();
     setup_system_accounts();
-    produce_blocks();
+    produce_block();
     create_account_with_resources("alice1111111"_n, config::system_account_name);
     //stake more than 15% of total EOS supply to activate chain
     transfer( name("eosio"), name("alice1111111"), core_from_string("650000000.0000"), name("eosio") );
@@ -387,9 +391,9 @@ BOOST_FIXTURE_TEST_CASE(account_results_total_resources_test, chain_plugin_teste
 
 BOOST_FIXTURE_TEST_CASE(account_results_self_delegated_bandwidth_test, chain_plugin_tester) { try {
 
-    produce_blocks(10);
+    produce_block();
     setup_system_accounts();
-    produce_blocks();
+    produce_block();
     const asset nstake = core_from_string("1.0000");
     const asset cstake = core_from_string("2.0000");
     create_account_with_resources("alice1111111"_n, config::system_account_name, core_from_string("1.0000"), false);
@@ -417,9 +421,9 @@ BOOST_FIXTURE_TEST_CASE(account_results_self_delegated_bandwidth_test, chain_plu
 
 BOOST_FIXTURE_TEST_CASE(account_results_refund_request_test, chain_plugin_tester) { try {
 
-    produce_blocks(10);
+    produce_block();
     setup_system_accounts();
-    produce_blocks();
+    produce_block();
 
     setup_producer_accounts({"producer1111"_n});
     regproducer("producer1111"_n);
@@ -473,7 +477,7 @@ BOOST_FIXTURE_TEST_CASE(account_results_refund_request_test, chain_plugin_tester
 
 BOOST_FIXTURE_TEST_CASE(account_results_voter_info_test, chain_plugin_tester) { try {
 
-    produce_blocks(10);
+    produce_block();
     setup_system_accounts();
 
     create_account_with_resources("alice1111111"_n, config::system_account_name, core_from_string("1.0000"), false);
@@ -482,13 +486,13 @@ BOOST_FIXTURE_TEST_CASE(account_results_voter_info_test, chain_plugin_tester) { 
     read_only::get_account_results results = get_account_info(name("alice1111111"));
 
     BOOST_CHECK(results.voter_info.get_type() != fc::variant::type_id::null_type);
-    BOOST_CHECK_EQUAL(21, results.voter_info["producers"].size());
+    BOOST_CHECK_EQUAL(21u, results.voter_info["producers"].size());
 
 } FC_LOG_AND_RETHROW() }
 
 BOOST_FIXTURE_TEST_CASE(account_results_rex_info_test, chain_plugin_tester) { try {
 
-    produce_blocks(10);
+    produce_block();
     setup_system_accounts();
 
     create_account_with_resources("alice1111111"_n, config::system_account_name, core_from_string("1.0000"), false);

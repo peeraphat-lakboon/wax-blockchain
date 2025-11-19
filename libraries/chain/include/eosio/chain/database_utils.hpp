@@ -4,7 +4,7 @@
 #include <fc/io/raw.hpp>
 #include <softfloat.hpp>
 
-namespace eosio { namespace chain {
+namespace eosio::chain {
 
    template<typename ...Indices>
    class index_set;
@@ -19,6 +19,16 @@ namespace eosio { namespace chain {
             auto const& index = db.get_index<Index>().indices();
             const auto& first = index.begin();
             const auto& last = index.end();
+            for (auto itr = first; itr != last; ++itr) {
+               function(*itr);
+            }
+         }
+
+         template<typename Secondary, typename F>
+         static void walk_by( const chainbase::database& db, F function ) {
+            const auto& idx = db.get_index<Index, Secondary>();
+            const auto& first = idx.begin();
+            const auto& last = idx.end();
             for (auto itr = first; itr != last; ++itr) {
                function(*itr);
             }
@@ -63,6 +73,13 @@ namespace eosio { namespace chain {
       static void walk_indices( F function ) {
          function( index_utils<Index>() );
       }
+
+      template<typename F>
+      static void walk_indices_via_post( boost::asio::io_context& ctx, F function ) {
+         ctx.post([function]() {
+            function( index_utils<Index>() );
+         });
+      }
    };
 
    template<typename FirstIndex, typename ...RemainingIndices>
@@ -78,19 +95,13 @@ namespace eosio { namespace chain {
          index_set<FirstIndex>::walk_indices(function);
          index_set<RemainingIndices...>::walk_indices(function);
       }
+
+      template<typename F>
+      static void walk_indices_via_post( boost::asio::io_context& ctx, F function ) {
+         index_set<FirstIndex>::walk_indices_via_post(ctx, function);
+         index_set<RemainingIndices...>::walk_indices_via_post(ctx, function);
+      }
    };
-
-   template<typename DataStream>
-   DataStream& operator << ( DataStream& ds, const shared_blob& b ) {
-      fc::raw::pack(ds, static_cast<const shared_string&>(b));
-      return ds;
-   }
-
-   template<typename DataStream>
-   DataStream& operator >> ( DataStream& ds, shared_blob& b ) {
-      fc::raw::unpack(ds, static_cast<shared_string &>(b));
-      return ds;
-   }
 
 namespace detail {
    struct snapshot_key_value_object {
@@ -127,7 +138,7 @@ namespace detail {
    };
 }
 
-} }
+}
 
 namespace fc {
 
@@ -206,9 +217,9 @@ namespace fc {
 
    inline
    void from_variant( const variant& v, eosio::chain::shared_string& s ) {
-      string _s;
+      std::string _s;
       from_variant(v, _s);
-      s = eosio::chain::shared_string(_s.begin(), _s.end(), s.get_allocator());
+      s = _s;
    }
 
    inline
@@ -218,8 +229,8 @@ namespace fc {
 
    inline
    void from_variant( const variant& v, eosio::chain::shared_blob& b ) {
-      string _s = base64_decode(v.as_string());
-      b = eosio::chain::shared_blob(_s.begin(), _s.end(), b.get_allocator());
+      std::vector<char> b64 = base64_decode(v.as_string());
+      b = std::string_view(b64.data(), b64.size());
    }
 
    template<typename T>
@@ -231,7 +242,7 @@ namespace fc {
    void from_variant( const variant& v, eosio::chain::shared_vector<T>& sv ) {
       std::vector<T> _v;
       from_variant(v, _v);
-      sv = eosio::chain::shared_vector<T>(_v.begin(), _v.end(), sv.get_allocator());
+      sv = v;
    }
 
    inline
@@ -245,8 +256,7 @@ namespace fc {
    void from_variant(const fc::variant& v, eosio::chain::detail::snapshot_key_value_object& a) {
       from_variant(v["primary_key"], a.primary_key);
       from_variant(v["payer"], a.payer);
-      const std::string s = base64_decode(v["value"].as_string());
-      a.value = std::vector<char>(s.begin(), s.end());
+      a.value = base64_decode(v["value"].as_string());
    }
 }
 
@@ -262,6 +272,65 @@ namespace chainbase {
    DataStream& operator >> ( DataStream& ds, oid<OidType>& oid ) {
       fc::raw::unpack(ds, oid._id);
       return ds;
+   }
+
+   // chainbase::shared_cow_string
+   // ----------------------------
+   template<typename Stream>
+   inline Stream& operator<<(Stream& s, const chainbase::shared_cow_string& v)  {
+      FC_ASSERT(v.size() <= MAX_NUM_ARRAY_ELEMENTS);
+      fc::raw::pack(s, fc::unsigned_int((uint32_t)v.size()));
+      if( v.size() )
+         s.write((const char*)v.data(), v.size());
+      return s;
+   }
+
+   template<typename Stream>
+   inline Stream& operator>>(Stream& s, chainbase::shared_cow_string& v)  {
+      fc::unsigned_int sz;
+      fc::raw::unpack(s, sz);
+      FC_ASSERT(sz.value <= MAX_SIZE_OF_BYTE_ARRAYS);
+      if (sz) {
+         v.resize_and_fill(sz, [&](char* buf, std::size_t sz) {
+            s.read(buf, sz);
+         });
+      }
+      return s;
+   }
+
+   // chainbase::shared_cow_vector
+   // ----------------------------
+   template<typename Stream, typename T>
+   inline Stream& operator<<(Stream& s, const chainbase::shared_cow_vector<T>& v)  {
+      FC_ASSERT(v.size() <= MAX_NUM_ARRAY_ELEMENTS);
+      fc::raw::pack( s, fc::unsigned_int((uint32_t)v.size()));
+      for (const auto& el : v)
+         fc::raw::pack(s, el);
+      return s;
+   }
+
+   template<typename Stream, typename T>
+   inline Stream& operator>>(Stream& s, chainbase::shared_cow_vector<T>& v)  {
+      fc::unsigned_int size;
+      fc::raw::unpack( s, size );
+      FC_ASSERT(size.value  <= MAX_NUM_ARRAY_ELEMENTS);
+      FC_ASSERT(v.size() == 0);
+      v.clear_and_construct(size.value, 0, [&](auto* dest, std::size_t i) {
+         new (dest) T(); // unpack expects a constructed variable
+         fc::raw::unpack(s, *dest);
+      });
+      return s;
+   }
+
+   // chainbase::shared_cow_vector<char>
+   // ----------------------------------
+   template<typename Stream, typename T>
+   inline Stream& operator<<(Stream& s, const chainbase::shared_cow_vector<char>& v)  {
+      FC_ASSERT(v.size() <= MAX_NUM_ARRAY_ELEMENTS);
+      fc::raw::pack( s, fc::unsigned_int((uint32_t)v.size()));
+      if( v.size() )
+         s.write((const char*)v.data(), v.size());
+      return s;
    }
 }
 

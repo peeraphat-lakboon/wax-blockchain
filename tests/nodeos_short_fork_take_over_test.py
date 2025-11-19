@@ -105,7 +105,7 @@ def getMinHeadAndLib(prodNodes):
 
 
 
-args = TestHelper.parse_args({"--prod-count","--dump-error-details","--keep-logs","-v","--leave-running","--clean-run",
+args = TestHelper.parse_args({"--prod-count","--activate-if","--dump-error-details","--keep-logs","-v","--leave-running",
                               "--wallet-port","--unshared"})
 Utils.Debug=args.v
 totalProducerNodes=2
@@ -113,17 +113,13 @@ totalNonProducerNodes=1
 totalNodes=totalProducerNodes+totalNonProducerNodes
 maxActiveProducers=3
 totalProducers=maxActiveProducers
-cluster=Cluster(walletd=True,unshared=args.unshared)
+cluster=Cluster(unshared=args.unshared, keepRunning=args.leave_running, keepLogs=args.keep_logs)
+activateIF=args.activate_if
 dumpErrorDetails=args.dump_error_details
-keepLogs=args.keep_logs
-dontKill=args.leave_running
-killAll=args.clean_run
 walletPort=args.wallet_port
 
 walletMgr=WalletMgr(True, port=walletPort)
 testSuccessful=False
-killEosInstances=not dontKill
-killWallet=not dontKill
 
 WalletdName=Utils.EosWalletName
 ClientName="cleos"
@@ -132,21 +128,20 @@ try:
     TestHelper.printSystemInfo("BEGIN")
 
     cluster.setWalletMgr(walletMgr)
-    cluster.killall(allInstances=killAll)
-    cluster.cleanup()
     Print("Stand up cluster")
     specificExtraNodeosArgs={}
     # producer nodes will be mapped to 0 through totalProducerNodes-1, so the number totalProducerNodes will be the non-producing node
     specificExtraNodeosArgs[totalProducerNodes]="--plugin eosio::test_control_api_plugin"
-
+    # test expects split network to advance with single producer
+    extraNodeosArgs=" --production-pause-vote-timeout-ms 0 "
 
     # ***   setup topogrophy   ***
 
-    # "bridge" shape connects defprocera through defproducerk (in node0) to each other and defproducerl through defproduceru (in node01)
+    # "bridge" shape distributes defproducera,defproducerc in node0 and defproducerb in node1
     # and the only connection between those 2 groups is through the bridge node
     if cluster.launch(prodCount=2, topo="bridge", pnodes=totalProducerNodes,
-                      totalNodes=totalNodes, totalProducers=totalProducers,
-                      specificExtraNodeosArgs=specificExtraNodeosArgs, onlySetProds=True) is False:
+                      totalNodes=totalNodes, totalProducers=totalProducers, activateIF=activateIF,
+                      specificExtraNodeosArgs=specificExtraNodeosArgs, extraNodeosArgs=extraNodeosArgs, onlySetProds=True) is False:
         Utils.cmdError("launcher")
         Utils.errorExit("Failed to stand up eos cluster.")
     Print("Validating system accounts after bootstrap")
@@ -183,28 +178,11 @@ try:
     cluster.biosNode.kill(signal.SIGTERM)
 
     Utils.Print("catching defproducera")
-    tries = 120
+    node.waitForProducer("defproducera", timeout=60)
+    Utils.Print("catching the start of defproducerc")
+    node.waitForProducer("defproducerc", timeout=60)
+
     blockNum = node.getHeadBlockNum()
-    blockProducer=node.getBlockProducerByNum(blockNum)
-    while blockProducer != "defproducera" and tries > 0:
-        blockNum+=1
-        blockProducer=node.getBlockProducerByNum(blockNum)
-        tries = tries - 1
-
-    if tries == 0:
-        Utils.errorExit("failed to catch a block produced by defproducera")
-
-    Utils.Print("catching the start of defproducerb")
-    tries = 30
-    while blockProducer != "defproducerb" and tries > 0:
-        blockNum+=1
-        blockProducer=node.getBlockProducerByNum(blockNum)
-        tries = tries - 1
-
-    if tries == 0:
-        Utils.errorExit("failed to catch a block produced by defproducerb")
-
-    blockNum+=1
     blockProducer=node.getBlockProducerByNum(blockNum)
     blockProducer1=node1.getBlockProducerByNum(blockNum)
     Utils.Print("block number %d is producer by %s in node0" % (blockNum, blockProducer))
@@ -215,9 +193,9 @@ try:
     # block number to start expecting node killed after
     preKillBlockNum=nonProdNode.getBlockNum()
     preKillBlockProducer=nonProdNode.getBlockProducerByNum(preKillBlockNum)
-    # kill at last block before defproducerl, since the block it is killed on will get propagated
-    killAtProducer="defproducerb"
-    inRowCountPerProducer=12
+    # kill before defproducerb
+    killAtProducer="defproducera"
+    inRowCountPerProducer=10 # kill before b can produce
     nonProdNode.killNodeOnProducer(producer=killAtProducer, whereInSequence=(inRowCountPerProducer-1))
 
 
@@ -308,7 +286,7 @@ try:
     killBlockNum=blockNum
     lastBlockNum=killBlockNum+(maxActiveProducers - 1)*inRowCountPerProducer+1  # allow 1st testnet group to produce just 1 more block than the 2nd
 
-    Print("Tracking the blocks from the divergence till there are 10*12 blocks on one chain and 10*12+1 on the other, from block %d to %d" % (killBlockNum, lastBlockNum))
+    Print("Tracking the blocks from the divergence till there are 2*12 blocks on one chain and 2*12+1 on the other, from block %d to %d" % (killBlockNum, lastBlockNum))
 
     for blockNum in range(killBlockNum,lastBlockNum):
         blockProducer0=prodNodes[0].getBlockProducerByNum(blockNum)
@@ -329,7 +307,7 @@ try:
         info=prodNode.getInfo()
         Print("node info: %s" % (info))
 
-    Print("killing node1(defproducerc) so that bridge node will frist connect to node0 (defproducera, defproducerb)")
+    Print("killing node1(defproducerb) so that bridge node will frist connect to node0 (defproducera, defproducerc)")
     node1.kill(killSignal=15)
     time.sleep(2)
     if node1.verifyAlive():
@@ -339,7 +317,7 @@ try:
     if not nonProdNode.relaunch(None):
         errorExit("Failure - (non-production) node %d should have restarted" % (nonProdNode.nodeNum))
 
-    Print("Relaunch node 1 (defproducerc) and let it connect to brigde node that already synced up with node 0")
+    Print("Relaunch node 1 (defproducerb) and let it connect to brigde node that already synced up with node 0")
     time.sleep(10)
     if not node1.relaunch(chainArg=" --enable-stale-production "):
         errorExit("Failure - (non-production) node 1 should have restarted")
@@ -361,10 +339,11 @@ try:
     while remainingChecks>0:
         if checkMatchBlock == killBlockNum and checkHead:
             checkMatchBlock = prodNodes[0].getBlockNum()
-        blockProducer0=prodNodes[0].getBlockProducerByNum(checkMatchBlock)
-        blockProducer1=prodNodes[1].getBlockProducerByNum(checkMatchBlock)
+        # do not exit on error as fork switching can make block not available temporarily
+        blockProducer0=prodNodes[0].getBlockProducerByNum(checkMatchBlock, exitOnError=False)
+        blockProducer1=prodNodes[1].getBlockProducerByNum(checkMatchBlock, exitOnError=False)
         match=blockProducer0==blockProducer1
-        if match:
+        if match and blockProducer0 is not None:
             if checkHead:
                 forkResolved=True
                 break
@@ -391,8 +370,8 @@ try:
     Print("Identifying the producers from the saved LIB to the current highest head, from block %d to %d" % (libNumAroundDivergence, endBlockNum))
 
     for blockNum in range(libNumAroundDivergence,endBlockNum):
-        blockProducer0=prodNodes[0].getBlockProducerByNum(blockNum)
-        blockProducer1=prodNodes[1].getBlockProducerByNum(blockNum)
+        blockProducer0=prodNodes[0].getBlockProducerByNum(blockNum, waitForBlock=False)
+        blockProducer1=prodNodes[1].getBlockProducerByNum(blockNum, waitForBlock=False)
         blockProducers0.append({"blockNum":blockNum, "prod":blockProducer0})
         blockProducers1.append({"blockNum":blockNum, "prod":blockProducer1})
 
@@ -414,16 +393,17 @@ try:
 
     testSuccessful=True
 finally:
-    TestHelper.shutdown(cluster, walletMgr, testSuccessful=testSuccessful, killEosInstances=killEosInstances, killWallet=killWallet, keepLogs=keepLogs, cleanRun=killAll, dumpErrorDetails=dumpErrorDetails)
+    TestHelper.shutdown(cluster, walletMgr, testSuccessful=testSuccessful, dumpErrorDetails=dumpErrorDetails)
 
-    if not testSuccessful:
-        Print(Utils.FileDivider)
-        Print("Compare Blocklog")
-        cluster.compareBlockLogs()
-        Print(Utils.FileDivider)
-        Print("Compare Blocklog")
-        cluster.printBlockLog()
-        Print(Utils.FileDivider)
+# Too much output for ci/cd
+#     if not testSuccessful:
+#         Print(Utils.FileDivider)
+#         Print("Compare Blocklog")
+#         cluster.compareBlockLogs()
+#         Print(Utils.FileDivider)
+#         Print("Print Blocklog")
+#         cluster.printBlockLog()
+#         Print(Utils.FileDivider)
 
 exitCode = 0 if testSuccessful else 1
 exit(exitCode)

@@ -2,24 +2,15 @@
 
 #include <thread>
 
-#define BOOST_TEST_MODULE message_buffer
-#include <boost/test/included/unit_test.hpp>
+#include <boost/test/unit_test.hpp>
 
 namespace {
 size_t mb_size(boost::asio::mutable_buffer& mb) {
-#if BOOST_VERSION >= 106600
    return mb.size();
-#else
-   return boost::asio::detail::buffer_size_helper(mb);
-#endif
 }
 
 void* mb_data(boost::asio::mutable_buffer& mb) {
-#if BOOST_VERSION >= 106600
    return mb.data();
-#else
-   return boost::asio::detail::buffer_cast_helper(mb);
-#endif
 }
 }
 
@@ -144,17 +135,17 @@ BOOST_AUTO_TEST_CASE(message_buffer_peek_read)
       fc::message_buffer<small> mb;
       BOOST_CHECK_EQUAL(mb.total_bytes(), small);
       BOOST_CHECK_EQUAL(mb.bytes_to_write(), small);
-      BOOST_CHECK_EQUAL(mb.bytes_to_read(), 0);
+      BOOST_CHECK_EQUAL(mb.bytes_to_read(), 0u);
       BOOST_CHECK_EQUAL(mb.read_ptr(), mb.write_ptr());
-      BOOST_CHECK_EQUAL(mb.read_index().first, 0);
-      BOOST_CHECK_EQUAL(mb.read_index().second, 0);
-      BOOST_CHECK_EQUAL(mb.write_index().first, 0);
-      BOOST_CHECK_EQUAL(mb.write_index().second, 0);
+      BOOST_CHECK_EQUAL(mb.read_index().first, 0u);
+      BOOST_CHECK_EQUAL(mb.read_index().second, 0u);
+      BOOST_CHECK_EQUAL(mb.write_index().first, 0u);
+      BOOST_CHECK_EQUAL(mb.write_index().second, 0u);
 
       mb.add_space(100 - small);
       BOOST_CHECK_EQUAL(mb.total_bytes(), 4 * small);
       BOOST_CHECK_EQUAL(mb.bytes_to_write(), 4 * small);
-      BOOST_CHECK_EQUAL(mb.bytes_to_read(), 0);
+      BOOST_CHECK_EQUAL(mb.bytes_to_read(), 0u);
       BOOST_CHECK_EQUAL(mb.read_ptr(), mb.write_ptr());
 
       char* write_ptr = mb.write_ptr();
@@ -172,12 +163,12 @@ BOOST_AUTO_TEST_CASE(message_buffer_peek_read)
 
       BOOST_CHECK_EQUAL(mb.total_bytes(), 4 * small);
       BOOST_CHECK_EQUAL(mb.bytes_to_write(), 4 * small - 100);
-      BOOST_CHECK_EQUAL(mb.bytes_to_read(), 100);
+      BOOST_CHECK_EQUAL(mb.bytes_to_read(), 100u);
       BOOST_CHECK_NE((void*) mb.read_ptr(), (void*) mb.write_ptr());
-      BOOST_CHECK_EQUAL(mb.read_index().first, 0);
-      BOOST_CHECK_EQUAL(mb.read_index().second, 0);
-      BOOST_CHECK_EQUAL(mb.write_index().first, 3);
-      BOOST_CHECK_EQUAL(mb.write_index().second, 4);
+      BOOST_CHECK_EQUAL(mb.read_index().first, 0u);
+      BOOST_CHECK_EQUAL(mb.read_index().second, 0u);
+      BOOST_CHECK_EQUAL(mb.write_index().first, 3u);
+      BOOST_CHECK_EQUAL(mb.write_index().second, 4u);
 
       char buffer[100];
       auto index = mb.read_index();
@@ -189,7 +180,7 @@ BOOST_AUTO_TEST_CASE(message_buffer_peek_read)
 
       BOOST_CHECK_EQUAL(mb.total_bytes(), 4 * small);
       BOOST_CHECK_EQUAL(mb.bytes_to_write(), 4 * small - 100);
-      BOOST_CHECK_EQUAL(mb.bytes_to_read(), 100);
+      BOOST_CHECK_EQUAL(mb.bytes_to_read(), 100u);
       BOOST_CHECK_NE((void*) mb.read_ptr(), (void*) mb.write_ptr());
 
       char buffer2[100];
@@ -200,7 +191,7 @@ BOOST_AUTO_TEST_CASE(message_buffer_peek_read)
 
       BOOST_CHECK_EQUAL(mb.total_bytes(), small);
       BOOST_CHECK_EQUAL(mb.bytes_to_write(), small);
-      BOOST_CHECK_EQUAL(mb.bytes_to_read(), 0);
+      BOOST_CHECK_EQUAL(mb.bytes_to_read(), 0u);
       BOOST_CHECK_EQUAL(mb.read_ptr(), mb.write_ptr());
     }
   }
@@ -216,12 +207,12 @@ BOOST_AUTO_TEST_CASE(message_buffer_write_ptr_to_end)
       fc::message_buffer<small> mb;
       BOOST_CHECK_EQUAL(mb.total_bytes(), small);
       BOOST_CHECK_EQUAL(mb.bytes_to_write(), small);
-      BOOST_CHECK_EQUAL(mb.bytes_to_read(), 0);
+      BOOST_CHECK_EQUAL(mb.bytes_to_read(), 0u);
       BOOST_CHECK_EQUAL(mb.read_ptr(), mb.write_ptr());
-      BOOST_CHECK_EQUAL(mb.read_index().first, 0);
-      BOOST_CHECK_EQUAL(mb.read_index().second, 0);
-      BOOST_CHECK_EQUAL(mb.write_index().first, 0);
-      BOOST_CHECK_EQUAL(mb.write_index().second, 0);
+      BOOST_CHECK_EQUAL(mb.read_index().first, 0u);
+      BOOST_CHECK_EQUAL(mb.read_index().second, 0u);
+      BOOST_CHECK_EQUAL(mb.write_index().first, 0u);
+      BOOST_CHECK_EQUAL(mb.write_index().second, 0u);
 
       char* write_ptr = mb.write_ptr();
       for (uint32_t ind = 0; ind < small; ind++) {
@@ -234,10 +225,10 @@ BOOST_AUTO_TEST_CASE(message_buffer_write_ptr_to_end)
       BOOST_CHECK_EQUAL(mb.bytes_to_write(), small);
       BOOST_CHECK_EQUAL(mb.bytes_to_read(), small);
       BOOST_CHECK_NE((void*) mb.read_ptr(), (void*) mb.write_ptr());
-      BOOST_CHECK_EQUAL(mb.read_index().first, 0);
-      BOOST_CHECK_EQUAL(mb.read_index().second, 0);
-      BOOST_CHECK_EQUAL(mb.write_index().first, 1);
-      BOOST_CHECK_EQUAL(mb.write_index().second, 0);
+      BOOST_CHECK_EQUAL(mb.read_index().first, 0u);
+      BOOST_CHECK_EQUAL(mb.read_index().second, 0u);
+      BOOST_CHECK_EQUAL(mb.write_index().first, 1u);
+      BOOST_CHECK_EQUAL(mb.write_index().second, 0u);
 
       auto mbs = mb.get_buffer_sequence_for_boost_async_read();
       auto mbsi = mbs.begin();
@@ -350,6 +341,57 @@ BOOST_AUTO_TEST_CASE(message_buffer_datastream) {
       std::string s;
       fc::raw::unpack( ds2, s );
       BOOST_CHECK_EQUAL( s, std::string( "hello" ) );
+   }
+}
+
+BOOST_AUTO_TEST_CASE(message_buffer_datastream_tuple) {
+   using my_message_buffer_t = fc::message_buffer<1024>;
+   my_message_buffer_t mbuff;
+
+   char buf[1024];
+   fc::datastream<char*> ds( buf, 1024 );
+
+   using my_tuple = std::tuple<int, int, std::string>;
+   my_tuple t(13, 42, "hello");
+   fc::raw::pack( ds, t );
+
+   memcpy(mbuff.write_ptr(), buf, 1024);
+   mbuff.advance_write_ptr(1024);
+
+   for( int i = 0; i < 3; ++i ) {
+      auto ds2 = mbuff.create_peek_datastream();
+      my_tuple t2;
+      fc::raw::unpack( ds2, t2 );
+      BOOST_CHECK( t == t2 );
+   }
+
+   {
+      auto ds2 = mbuff.create_datastream();
+      my_tuple t2;
+      fc::raw::unpack( ds2, t2 );
+      BOOST_CHECK( t == t2 );
+   }
+}
+
+BOOST_AUTO_TEST_CASE(message_buffer_datastream_variadic_pack_unpack) {
+   using my_message_buffer_t = fc::message_buffer<1024>;
+   my_message_buffer_t mbuff;
+
+   char buf[1024];
+   fc::datastream<char*> ds( buf, 1024 );
+
+   using my_tuple = std::tuple<int, int, std::string>;
+   my_tuple t(13, 42, "hello");
+   fc::raw::pack( ds, std::get<0>(t), std::get<1>(t),  std::get<2>(t) );
+
+   memcpy(mbuff.write_ptr(), buf, 1024);
+   mbuff.advance_write_ptr(1024);
+
+   for( int i = 0; i < 3; ++i ) {
+      auto ds2 = mbuff.create_peek_datastream();
+      my_tuple t2;
+      fc::raw::unpack( ds2, std::get<0>(t2), std::get<1>(t2),  std::get<2>(t2) );
+      BOOST_CHECK( t == t2 );
    }
 }
 

@@ -11,11 +11,12 @@ using namespace eosio;
 
 #define CALL_WITH_400(api_name, api_handle, call_name, INVOKE, http_response_code) \
 {std::string("/v1/" #api_name "/" #call_name), \
+   api_category::db_size, \
    [api_handle](string&&, string&& body, url_response_callback&& cb) mutable { \
           try { \
              body = parse_params<std::string, http_params_types::no_params>(body); \
              INVOKE \
-             cb(http_response_code, fc::time_point::maximum(), fc::variant(result)); \
+             cb(http_response_code, fc::variant(result)); \
           } catch (...) { \
              http_plugin::handle_exception(#api_name, #call_name, body, cb); \
           } \
@@ -38,6 +39,7 @@ db_size_stats db_size_api_plugin::get() {
    ret.free_bytes = db.get_segment_manager()->get_free_memory();
    ret.size = db.get_segment_manager()->get_size();
    ret.used_bytes = ret.size - ret.free_bytes;
+   ret.reclaimable_bytes = db.get_reclaimable_memory();
 
    chainbase::database::database_index_row_count_multiset indices = db.row_count_per_index();
    for(const auto& i : indices)

@@ -93,8 +93,19 @@ namespace eosio { namespace chain {
       };
    }
 
-   void authorization_manager::add_to_snapshot( const snapshot_writer_ptr& snapshot ) const {
-      authorization_index_set::walk_indices([this, &snapshot]( auto utils ){
+   size_t authorization_manager::expected_snapshot_row_count() const {
+      size_t ret = 0;
+      authorization_index_set::walk_indices([this, &ret]( auto utils ) {
+         using index_t = typename decltype(utils)::index_t;
+         if(std::is_same_v<typename index_t::value_type, permission_usage_object>)
+            return;
+         ret += _db.get_index<index_t>().size();
+      });
+      return ret;
+   }
+
+   void authorization_manager::add_to_snapshot( const snapshot_writer_ptr& snapshot, snapshot_written_row_counter& row_counter ) const {
+      authorization_index_set::walk_indices([this, &snapshot, &row_counter]( auto utils ){
          using section_t = typename decltype(utils)::index_t::value_type;
 
          // skip the permission_usage_index as its inlined with permission_index
@@ -102,16 +113,17 @@ namespace eosio { namespace chain {
             return;
          }
 
-         snapshot->write_section<section_t>([this]( auto& section ){
-            decltype(utils)::walk(_db, [this, &section]( const auto &row ) {
+         snapshot->write_section<section_t>([this, &row_counter]( auto& section ){
+            decltype(utils)::walk(_db, [this, &section, &row_counter]( const auto &row ) {
                section.add_row(row, _db);
+               row_counter.progress();
             });
          });
       });
    }
 
-   void authorization_manager::read_from_snapshot( const snapshot_reader_ptr& snapshot ) {
-      authorization_index_set::walk_indices([this, &snapshot]( auto utils ){
+   void authorization_manager::read_from_snapshot( const snapshot_reader_ptr& snapshot, std::atomic_size_t& read_row_count, boost::asio::io_context& ctx ) {
+      authorization_index_set::walk_indices_via_post(ctx, [this, &snapshot, &read_row_count]( auto utils ){
          using section_t = typename decltype(utils)::index_t::value_type;
 
          // skip the permission_usage_index as its inlined with permission_index
@@ -119,12 +131,13 @@ namespace eosio { namespace chain {
             return;
          }
 
-         snapshot->read_section<section_t>([this]( auto& section ) {
+         snapshot->read_section<section_t>([this, &read_row_count]( auto& section ) {
             bool more = !section.empty();
             while(more) {
                decltype(utils)::create(_db, [this, &section, &more]( auto &row ) {
                   more = section.read_row(row, _db);
                });
+               read_row_count.fetch_add(1u, std::memory_order_relaxed);
             }
          });
       });
@@ -479,7 +492,12 @@ namespace eosio { namespace chain {
 
       auto effective_provided_delay =  (provided_delay >= delay_max_limit) ? fc::microseconds::maximum() : provided_delay;
 
-      auto checker = make_auth_checker( [&](const permission_level& p){ return get_permission(p).auth; },
+      auto checker = make_auth_checker( [&](const permission_level& p) -> const shared_authority* {
+                                          if(const permission_object* po = find_permission(p))
+                                             return &po->auth;
+                                          else
+                                             return nullptr;
+                                        },
                                         _control.get_global_properties().configuration.max_authority_depth,
                                         provided_keys,
                                         provided_permissions,
@@ -580,7 +598,12 @@ namespace eosio { namespace chain {
 
       auto delay_max_limit = fc::seconds( _control.get_global_properties().configuration.max_transaction_delay );
 
-      auto checker = make_auth_checker( [&](const permission_level& p){ return get_permission(p).auth; },
+      auto checker = make_auth_checker( [&](const permission_level& p) -> const shared_authority* {
+                                          if(const permission_object* po = find_permission(p))
+                                             return &po->auth;
+                                          else
+                                             return nullptr;
+                                        },
                                         _control.get_global_properties().configuration.max_authority_depth,
                                         provided_keys,
                                         provided_permissions,
@@ -611,7 +634,12 @@ namespace eosio { namespace chain {
                                                                        fc::microseconds provided_delay
                                                                      )const
    {
-      auto checker = make_auth_checker( [&](const permission_level& p){ return get_permission(p).auth; },
+      auto checker = make_auth_checker( [&](const permission_level& p) -> const shared_authority* {
+                                          if(const permission_object* po = find_permission(p))
+                                             return &po->auth;
+                                          else
+                                             return nullptr;
+                                        },
                                         _control.get_global_properties().configuration.max_authority_depth,
                                         candidate_keys,
                                         {},

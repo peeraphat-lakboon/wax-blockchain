@@ -1,31 +1,22 @@
-#include <algorithm>
-#include <iterator>
-#include <vector>
-
 #include <eosio/chain/controller.hpp>
 #include <eosio/chain/exceptions.hpp>
 #include <eosio/chain/permission_object.hpp>
 #include <eosio/chain/global_property_object.hpp>
 #include <eosio/testing/tester.hpp>
 
-#include <fc/crypto/digest.hpp>
-
-#include <boost/range/algorithm/find.hpp>
-#include <boost/range/algorithm/find_if.hpp>
-#include <boost/range/algorithm/permutation.hpp>
-#include <boost/test/unit_test.hpp>
+#include <vector>
 
 using namespace eosio;
 using namespace chain;
-using tester = eosio::testing::tester;
+using namespace eosio::testing;
 
 BOOST_AUTO_TEST_SUITE(special_account_tests)
 
 //Check special accounts exits in genesis
-BOOST_FIXTURE_TEST_CASE(accounts_exists, tester)
+BOOST_AUTO_TEST_CASE_TEMPLATE( accounts_exists, T, testers )
 { try {
 
-      tester test;
+      T test;
       chain::controller *control = test.control.get();
       const chain::database& chain1_db = control->db();
 
@@ -44,7 +35,7 @@ BOOST_FIXTURE_TEST_CASE(accounts_exists, tester)
       auto producers = chain1_db.find<account_object, by_name>(config::producers_account_name);
       BOOST_CHECK(producers != nullptr);
 
-      const auto& active_producers = control->head_block_state()->active_schedule;
+      const auto& active_producers = control->active_producers();
 
       const auto& producers_active_authority = chain1_db.get<permission_object, by_owner>(boost::make_tuple(config::producers_account_name, config::active_name));
       auto expected_threshold = (active_producers.producers.size() * 2)/3 + 1;
@@ -64,12 +55,12 @@ BOOST_FIXTURE_TEST_CASE(accounts_exists, tester)
          if (n1 != n2) diff.push_back(name(n2.to_uint64_t() - n1.to_uint64_t()));
       }
 
-      BOOST_CHECK_EQUAL(diff.size(), 0);
+      BOOST_CHECK_EQUAL(diff.size(), 0u);
 
       const auto& producers_owner_authority = chain1_db.get<permission_object, by_owner>(boost::make_tuple(config::producers_account_name, config::owner_name));
-      BOOST_CHECK_EQUAL(producers_owner_authority.auth.threshold, 1);
-      BOOST_CHECK_EQUAL(producers_owner_authority.auth.accounts.size(), 0);
-      BOOST_CHECK_EQUAL(producers_owner_authority.auth.keys.size(), 0);
+      BOOST_CHECK_EQUAL(producers_owner_authority.auth.threshold, 1u);
+      BOOST_CHECK_EQUAL(producers_owner_authority.auth.accounts.size(), 0u);
+      BOOST_CHECK_EQUAL(producers_owner_authority.auth.keys.size(), 0u);
 
       //TODO: Add checks on the other permissions of the producers account
 
