@@ -1,6 +1,6 @@
 cmake_minimum_required( VERSION 3.16 )
 
-project( antelope-spring )
+project( antelope-spring-ce )
 include(CTest)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMakeModules")
@@ -16,7 +16,7 @@ set( CXX_STANDARD_REQUIRED ON)
 set(VERSION_MAJOR 1)
 set(VERSION_MINOR 3)
 set(VERSION_PATCH 0)
-set(VERSION_SUFFIX dev)
+#set(VERSION_SUFFIX dev)
 
 if(VERSION_SUFFIX)
     set(VERSION_FULL "${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}-${VERSION_SUFFIX}")
