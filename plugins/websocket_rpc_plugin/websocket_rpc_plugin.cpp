@@ -424,7 +424,7 @@ namespace eosio {
       my->add_api(27, RW_CALL_ASYNC(send_transaction, rw_api, chain_apis::read_write::send_transaction_results, http_params_types::params_required));
       my->add_api(28, RW_CALL_ASYNC(send_transaction2, rw_api, chain_apis::read_write::send_transaction_results, http_params_types::params_required));
       my->add_api(29, RO_CALL(get_accounts_by_authorizers, ro_api, http_params_types::params_required));
-      my->add_async_api(30, RO_CALL_ASYNC(send_read_only_transaction, ro_api, chain_apis::read_only::send_read_only_transaction_results, http_params_types::no_params));
+      my->add_async_api(30, RO_CALL_ASYNC(send_read_only_transaction, ro_api, chain_apis::read_only::send_read_only_transaction_results, http_params_types::params_required));
       my->add_async_api(31, RO_CALL(get_raw_block, ro_api, http_params_types::params_required));
       my->add_async_api(32, RO_CALL(get_block_header, ro_api, http_params_types::params_required));
       my->add_api(33, RO_CALL(get_transaction_status, ro_api, http_params_types::params_required));
